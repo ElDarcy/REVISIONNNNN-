@@ -1,0 +1,87 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+/// Represents a single entry in the `deliveryQueue` collection.
+///
+/// The document ID is the `orderId` so each order can only have one entry
+/// (duplicate prevention). Delivery staff act on these entries to start and
+/// complete deliveries.
+class DeliveryQueueEntry {
+  final String orderId;
+  final String? customerId;
+  final String? customerName;
+  final String? address;
+  final double latitude;
+  final double longitude;
+  final double distanceKm;
+  final int priorityScore;
+  final String status; // Pending Delivery | Out for Delivery | Completed
+  final String? assignedTo;
+  final DateTime? createdAt;
+  final DateTime? startedAt;
+  final DateTime? completedAt;
+
+  const DeliveryQueueEntry({
+    required this.orderId,
+    this.customerId,
+    this.customerName,
+    this.address,
+    this.latitude = 0,
+    this.longitude = 0,
+    this.distanceKm = 0,
+    this.priorityScore = 0,
+    this.status = 'Pending Delivery',
+    this.assignedTo,
+    this.createdAt,
+    this.startedAt,
+    this.completedAt,
+  });
+
+  /// Estimated delivery time based on distance (approx. 6 min per km).
+  int get etaMinutes => (distanceKm * 6).round().clamp(10, 60);
+
+  Map<String, dynamic> toMap() {
+    return {
+      'orderId': orderId,
+      'customerId': customerId,
+      'customerName': customerName,
+      'address': address,
+      'latitude': latitude,
+      'longitude': longitude,
+      'distanceKm': distanceKm,
+      'priorityScore': priorityScore,
+      'status': status,
+      'assignedTo': assignedTo,
+      'createdAt': createdAt == null ? null : Timestamp.fromDate(createdAt!),
+      'startedAt': startedAt == null ? null : Timestamp.fromDate(startedAt!),
+      'completedAt': completedAt == null
+          ? null
+          : Timestamp.fromDate(completedAt!),
+    };
+  }
+
+  factory DeliveryQueueEntry.fromMap(Map<String, dynamic> map, String id) {
+    return DeliveryQueueEntry(
+      orderId: id,
+      customerId: map['customerId'],
+      customerName: map['customerName'],
+      address: map['address'],
+      latitude: (map['latitude'] ?? 0).toDouble(),
+      longitude: (map['longitude'] ?? 0).toDouble(),
+      distanceKm: (map['distanceKm'] ?? 0).toDouble(),
+      priorityScore: (map['priorityScore'] ?? 0).toInt(),
+      status: map['status'] ?? 'Pending Delivery',
+      assignedTo: map['assignedTo'],
+      createdAt: _parseDate(map['createdAt']),
+      startedAt: _parseDate(map['startedAt']),
+      completedAt: _parseDate(map['completedAt']),
+    );
+  }
+
+  static DateTime? _parseDate(dynamic value) {
+    if (value == null) return null;
+    if (value is Timestamp) return value.toDate();
+    if (value is DateTime) return value;
+    if (value is String) return DateTime.tryParse(value);
+    return null;
+  }
+}

@@ -1,0 +1,54 @@
+name: laundry_app
+description: "A complete Laundry Management System with Customer, Staff, and Admin roles."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # Firebase
+  firebase_core: ^3.12.1
+  firebase_auth: ^5.5.1
+  cloud_firestore: ^5.6.5
+  firebase_storage: ^12.4.4
+
+  # State Management
+  provider: ^6.1.2
+
+  # Location
+  geolocator: ^13.0.2
+  geocoding: ^3.0.0
+
+# Utilities
+  image_picker: ^1.1.2
+  intl: ^0.20.2
+  uuid: ^4.5.1
+  path_provider: ^2.1.5
+  shared_preferences: ^2.3.5
+  connectivity_plus: ^6.1.4
+  http: ^1.3.0
+  url_launcher: ^6.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/
+    - assets/icons/
+    - assets/fonts/
+    - assets/json/
+    - localization/
+
