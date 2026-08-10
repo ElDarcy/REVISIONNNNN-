@@ -32,6 +32,7 @@ import 'features/admin/screens/walkin_transaction_screen.dart';
 import 'features/admin/screens/reports_screen.dart';
 import 'features/admin/screens/admin_soap_inventory_screen.dart';
 import 'features/admin/screens/machine_analytics_screen.dart';
+import 'features/admin/screens/admin_machine_management_screen.dart';
 
 class LaundryApp extends StatelessWidget {
   const LaundryApp({super.key});
@@ -179,6 +180,10 @@ class LaundryApp extends StatelessWidget {
       case '/admin/soaps':
         return MaterialPageRoute(
           builder: (_) => const AdminSoapInventoryScreen(),
+        );
+      case '/admin/machine-management':
+        return MaterialPageRoute(
+          builder: (_) => const AdminMachineManagementScreen(),
         );
 
       default:

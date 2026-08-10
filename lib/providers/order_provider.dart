@@ -177,6 +177,100 @@ class OrderProvider extends ChangeNotifier {
     }
   }
 
+  /// Approve an order AND assign a staff member in a single atomic operation.
+  ///
+  /// Validation performed inside the transaction:
+  /// - The order must exist and not be already approved (no duplicate approval).
+  /// - A staff member must be selected (no approval without staff).
+  /// - The order must not already have a staff assigned (no multiple
+  ///   assignments).
+  ///
+  /// The approval and staff assignment are written together in one
+  /// transaction so neither can happen without the other. The payment
+  /// workflow is intentionally NOT modified here.
+  Future<bool> approveAndAssignStaff({
+    required String orderId,
+    required String adminId,
+    required String staffId,
+  }) async {
+    if (staffId.isEmpty) return false;
+    try {
+      final now = DateTime.now();
+      final orderRef = _firestore.collection('orders').doc(orderId);
+
+      await _firestore.runTransaction((transaction) async {
+        final doc = await transaction.get(orderRef);
+        if (!doc.exists) {
+          throw Exception('Order does not exist');
+        }
+        final orderData = doc.data()!;
+
+        // Prevent duplicate approval / multiple staff assignments.
+        final alreadyApproved = orderData['approvedAt'] != null;
+        final hasAssignedStaff =
+            orderData['assignedTo'] != null ||
+            orderData['staffId'] != null ||
+            orderData['assignedStaffId'] != null;
+        if (alreadyApproved || hasAssignedStaff) {
+          throw Exception('Order already approved or staff assigned');
+        }
+
+        // Determine cycles (same heuristic as approveOrder).
+        int cycles = (orderData['cycles'] as num?)?.toInt() ?? 0;
+        if (cycles <= 0) {
+          final items = orderData['items'] as List<dynamic>?;
+          if (items != null && items.isNotEmpty) {
+            final qty = (items.first['quantity'] as num?)?.toDouble() ?? 0;
+            cycles = qty.round();
+          }
+        }
+        if (cycles <= 0) {
+          final weight = (orderData['weight'] ?? 0).toDouble();
+          cycles = ServiceTimeEstimator.getCycleCount(weight);
+        }
+        if (cycles <= 0) cycles = 1;
+
+        final estimatedDuration = ServiceTimeEstimator.estimateMinutesForCycles(
+          cycles,
+        );
+        final estimatedFinish = now.add(Duration(minutes: estimatedDuration));
+
+        transaction.update(orderRef, {
+          'status': 'Approved',
+          'assignedStaffId': staffId,
+          'assignedTo': staffId,
+          'staffId': staffId,
+          'approvedAt': now.toIso8601String(),
+          'approvedBy': adminId,
+          'estimatedDuration': estimatedDuration,
+          'estimatedFinishTime': estimatedFinish.toIso8601String(),
+          'updatedAt': now.toIso8601String(),
+        });
+      });
+
+      // Create load records for this order (idempotent).
+      final orderObj = await getOrderById(orderId);
+      if (orderObj != null) {
+        final loadIds = await OrderLoadEngine.createLoadsForOrder(
+          _firestore,
+          orderObj,
+        );
+        if (loadIds.isNotEmpty) {
+          await _firestore.collection('orders').doc(orderId).update({
+            'numberOfLoads': loadIds.length,
+            'updatedAt': DateTime.now().toIso8601String(),
+          });
+        }
+      }
+      return true;
+    } catch (e) {
+      debugPrint('approveAndAssignStaff error: $e');
+      _error = 'Failed to approve and assign staff.';
+      notifyListeners();
+      return false;
+    }
+  }
+
   /// Stream all loads belonging to [orderId] in real time.
   Stream<List<OrderLoadModel>> streamOrderLoads(String orderId) {
     return _firestore
@@ -428,6 +522,70 @@ class OrderProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     }
+  }
+
+  /// Stream the current machine queue positions for all waiting loads.
+  /// Returns a map of `loadId -> queue position` (1-based). Loads waiting for
+  /// a washer and loads waiting for a dryer are ranked independently using
+  /// FIFO (oldest `waitingSince` first).
+  Stream<Map<String, int>> streamQueuePositions() {
+    return _firestore
+        .collection('laundryQueue')
+        .snapshots()
+        .map((snapshot) {
+          final washerQueue = <Map<String, dynamic>>[];
+          final dryerQueue = <Map<String, dynamic>>[];
+          for (final doc in snapshot.docs) {
+            final data = doc.data();
+            final loadId = data['loadId'] ?? '';
+            if (loadId.toString().isEmpty) continue;
+            final queueType = data['queueType'] ?? '';
+            final entry = {
+              'loadId': loadId.toString(),
+              'queueType': queueType.toString(),
+              'waitingSince': _toDateTime(data['waitingSince']),
+            };
+            if (queueType == 'washer') {
+              washerQueue.add(entry);
+            } else if (queueType == 'dryer') {
+              dryerQueue.add(entry);
+            }
+          }
+          washerQueue.sort((a, b) {
+            final ad = a['waitingSince'] as DateTime?;
+            final bd = b['waitingSince'] as DateTime?;
+            return (ad ?? DateTime.fromMillisecondsSinceEpoch(0)).compareTo(
+              bd ?? DateTime.fromMillisecondsSinceEpoch(0),
+            );
+          });
+          dryerQueue.sort((a, b) {
+            final ad = a['waitingSince'] as DateTime?;
+            final bd = b['waitingSince'] as DateTime?;
+            return (ad ?? DateTime.fromMillisecondsSinceEpoch(0)).compareTo(
+              bd ?? DateTime.fromMillisecondsSinceEpoch(0),
+            );
+          });
+          final result = <String, int>{};
+          for (var i = 0; i < washerQueue.length; i++) {
+            result[washerQueue[i]['loadId'] as String] = i + 1;
+          }
+          for (var i = 0; i < dryerQueue.length; i++) {
+            result[dryerQueue[i]['loadId'] as String] = i + 1;
+          }
+          return result;
+        })
+        .handleError((error) {
+          debugPrint('streamQueuePositions error: $error');
+          return <String, int>{};
+        });
+  }
+
+  static DateTime? _toDateTime(dynamic value) {
+    if (value == null) return null;
+    if (value is Timestamp) return value.toDate();
+    if (value is DateTime) return value;
+    if (value is String) return DateTime.tryParse(value);
+    return null;
   }
 
   Future<List<OrderModel>> loadUserOrders(String userId) async {

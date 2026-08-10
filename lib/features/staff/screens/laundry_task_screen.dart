@@ -3,26 +3,27 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_constants.dart';
-import '../../../core/utils/currency_helper.dart';
-import '../../../models/order_model.dart';
+import '../../../models/order_load_model.dart';
 import '../../../providers/order_provider.dart';
 import '../../../providers/machine_provider.dart';
 import '../../../engines/order_status_flow_engine.dart';
+import '../../../engines/order_load_engine.dart';
 
-/// Laundry Tasks screen for staff.
+/// Laundry Task screen for staff — operates on a SINGLE load.
 ///
 /// This is the ONLY place laundry processing operations live:
 ///   - Start Washing  (reserved -> washing, starts the 38-min timer)
 ///   - Complete Washing (releases washer; auto-assigns dryer for Wash & Dry)
 ///   - Start Drying   (reserved -> drying, starts the 38-min timer)
-///   - Complete Drying (releases dryer)
+///   - Complete Drying (releases dryer; marks load Completed)
 ///
 /// Machine assignment is fully system-driven (Least Used Machine algorithm).
-/// Staff never manually select a machine.
+/// Staff never manually select a machine; they only confirm physical steps.
 class LaundryTaskScreen extends StatefulWidget {
   final String orderId;
+  final String? loadId;
 
-  const LaundryTaskScreen({super.key, required this.orderId});
+  const LaundryTaskScreen({super.key, required this.orderId, this.loadId});
 
   @override
   State<LaundryTaskScreen> createState() => _LaundryTaskScreenState();
@@ -31,28 +32,16 @@ class LaundryTaskScreen extends StatefulWidget {
 class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
   bool _busy = false;
 
-  /// Resolve the service type for an order.
-  String _serviceType(OrderModel order) =>
-      OrderStatusFlowEngine.resolveServiceType(order);
-
-  /// Stream a single order by id, or the first active processing order when
-  /// no specific order id is provided.
-  Stream<OrderModel?> _streamOrder() {
-    if (widget.orderId.isNotEmpty) {
-      return context.read<OrderProvider>().streamOrderById(widget.orderId);
+  /// Stream a single load. Falls back to the first active processing load of
+  /// the order when no specific load id is provided (legacy navigation).
+  Stream<OrderLoadModel?> _streamLoad() {
+    final orderProvider = context.read<OrderProvider>();
+    if (widget.loadId != null && widget.loadId!.isNotEmpty) {
+      return orderProvider.streamOrderLoadById(widget.loadId!);
     }
-    return context.read<OrderProvider>().streamAllOrders().map((orders) {
-      final active =
-          orders
-              .where(
-                (o) =>
-                    o.status.isProcessing ||
-                    o.status.value ==
-                        OrderStatusFlowEngine.statusMachineAssigned ||
-                    o.status.value == OrderStatusFlowEngine.statusDryerAssigned,
-              )
-              .toList()
-            ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return orderProvider.streamOrderLoads(widget.orderId).map((loads) {
+      final active = loads.where((l) => !l.status.isFinished).toList()
+        ..sort((a, b) => a.loadNumber.compareTo(b.loadNumber));
       return active.isNotEmpty ? active.first : null;
     });
   }
@@ -61,24 +50,25 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Laundry Tasks'),
+        title: const Text('Laundry Task'),
         // Ensure staff can always go back to the main screen.
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           tooltip: 'Back to dashboard',
-          onPressed: () => Navigator.of(context).maybePop(),
+          onPressed: () =>
+              Navigator.of(context).popUntil((route) => route.isFirst),
         ),
       ),
-      body: StreamBuilder<OrderModel?>(
-        stream: _streamOrder(),
+      body: StreamBuilder<OrderLoadModel?>(
+        stream: _streamLoad(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
 
-          final order = snapshot.data;
-          if (order == null) {
-            // All tasks done -> show a message with a button to return.
+          final load = snapshot.data;
+          if (load == null) {
+            // This load is done -> show a message with a button to return.
             return Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
@@ -92,14 +82,16 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
                     ),
                     const SizedBox(height: 16),
                     const Text(
-                      'All laundry tasks completed!',
+                      'This laundry task is completed!',
                       style: TextStyle(fontSize: 18),
                     ),
                     const SizedBox(height: 24),
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
-                        onPressed: () => Navigator.of(context).maybePop(),
+                        onPressed: () => Navigator.of(
+                          context,
+                        ).popUntil((route) => route.isFirst),
                         icon: const Icon(Icons.arrow_back, color: Colors.white),
                         label: const Text(
                           'Back to Dashboard',
@@ -122,18 +114,18 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildOrderCard(order),
+                _buildLoadCard(load),
                 const SizedBox(height: 16),
-                _buildMachineInfoCard(order),
+                _buildMachineInfoCard(load),
                 const SizedBox(height: 16),
                 const Text(
                   'Actions',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 12),
-                _buildActionButtons(order),
+                _buildActionButtons(load),
                 const SizedBox(height: 16),
-                _buildStatusFlow(order),
+                _buildStatusFlow(load),
               ],
             ),
           );
@@ -142,7 +134,7 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
     );
   }
 
-  Widget _buildOrderCard(OrderModel order) {
+  Widget _buildLoadCard(OrderLoadModel load) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -153,7 +145,8 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  'Order #${order.id.substring(0, 6).toUpperCase()}',
+                  'Order ${load.orderId.substring(0, 6).toUpperCase()} · '
+                  'Load ${load.loadNumber}',
                   style: const TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.bold,
@@ -166,14 +159,14 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
                   ),
                   decoration: BoxDecoration(
                     color: _statusColor(
-                      order.status.value,
+                      load.status.value,
                     ).withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
-                    order.status.value,
+                    load.status.value,
                     style: TextStyle(
-                      color: _statusColor(order.status.value),
+                      color: _statusColor(load.status.value),
                       fontWeight: FontWeight.w600,
                       fontSize: 12,
                     ),
@@ -182,47 +175,40 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
               ],
             ),
             const SizedBox(height: 8),
-            Text('Service: ${_serviceType(order)}'),
-            Text('Weight: ${order.weight} kg'),
-            Text('Total: ${CurrencyHelper.formatSimple(order.totalAmount)}'),
-            if (order.paymentStatus.isNotEmpty)
-              Text('Payment: ${order.paymentStatus}'),
+            Text('Service: ${load.serviceType}'),
+            Text('Weight: ${load.weight} kg'),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildMachineInfoCard(OrderModel order) {
-    final machineId = order.assignedMachineId;
-    if (machineId == null) return const SizedBox.shrink();
-
-    final type = order.assignedMachineType ?? '';
-    final number = order.assignedMachineNumber;
-    final label = type == AppConstants.machineWasher ? 'Wash' : 'Dry';
+  Widget _buildMachineInfoCard(OrderLoadModel load) {
+    final washer = load.assignedWasherId;
+    final dryer = load.assignedDryerId;
+    if (washer == null && dryer == null) {
+      return const SizedBox.shrink();
+    }
 
     return Card(
       color: AppColors.primary.withValues(alpha: 0.06),
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(
-              type == AppConstants.machineWasher ? Icons.wash : Icons.air,
-              color: AppColors.primary,
-              size: 32,
+            Text(
+              'Assigned Machine',
+              style: TextStyle(color: Colors.grey, fontSize: 12),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+            const SizedBox(height: 8),
+            if (washer != null)
+              Row(
                 children: [
-                  const Text(
-                    'Assigned Machine',
-                    style: TextStyle(color: Colors.grey, fontSize: 12),
-                  ),
+                  const Icon(Icons.wash, color: AppColors.primary, size: 28),
+                  const SizedBox(width: 12),
                   Text(
-                    number != null ? '$label Machine #$number' : machineId,
+                    'Washer: $washer',
                     style: const TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
@@ -231,25 +217,41 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
                   ),
                 ],
               ),
-            ),
+            if (washer != null && dryer != null) const SizedBox(height: 8),
+            if (dryer != null)
+              Row(
+                children: [
+                  const Icon(Icons.air, color: Colors.deepPurple, size: 28),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Dryer: $dryer',
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.deepPurple,
+                    ),
+                  ),
+                ],
+              ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildActionButtons(OrderModel order) {
-    final serviceType = _serviceType(order);
+  Widget _buildActionButtons(OrderLoadModel load) {
+    final serviceType = load.serviceType;
     final needsDry = OrderStatusFlowEngine.needsDrying(serviceType);
-    final status = order.status.value;
+    final status = load.status.value;
     final machineProvider = context.read<MachineProvider>();
 
-    // Completed / cancelled -> show a back button.
-    if (status == 'Completed' || status == 'Cancelled') {
+    // Completed -> show a back button.
+    if (load.status.isFinished) {
       return SizedBox(
         width: double.infinity,
         child: ElevatedButton.icon(
-          onPressed: () => Navigator.of(context).maybePop(),
+          onPressed: () =>
+              Navigator.of(context).popUntil((route) => route.isFirst),
           icon: const Icon(Icons.arrow_back, color: Colors.white),
           label: const Text(
             'Back to Dashboard',
@@ -265,16 +267,16 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
 
     final buttons = <Widget>[];
 
-    // START WASHING (Machine Assigned + washer)
+    // START WASHING (Machine Assigned + washer assigned)
     if (status == OrderStatusFlowEngine.statusMachineAssigned &&
-        order.assignedMachineType == AppConstants.machineWasher) {
+        load.assignedWasherId != null) {
       buttons.add(
         _actionButton(
           label: 'Start Washing',
           icon: Icons.play_circle_fill,
           color: AppColors.processingColor,
           onPressed: () =>
-              _startMachine(machineProvider, order, AppConstants.machineWasher),
+              _startMachine(machineProvider, load, AppConstants.machineWasher),
         ),
       );
     }
@@ -283,7 +285,7 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
     if (status == OrderStatusFlowEngine.statusWashing) {
       final nextStatus = needsDry
           ? OrderStatusFlowEngine.statusWaitingForDryer
-          : OrderStatusFlowEngine.readyStatus(order);
+          : OrderStatusFlowEngine.statusCompleted;
       buttons.add(
         _actionButton(
           label: 'Complete Washing',
@@ -291,7 +293,7 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
           color: AppColors.success,
           onPressed: () => _completeStep(
             machineProvider,
-            order,
+            load,
             machineType: AppConstants.machineWasher,
             nextStatus: nextStatus,
             serviceType: serviceType,
@@ -300,22 +302,21 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
       );
     }
 
-    // START DRYING (Dryer Assigned or Machine Assigned with dryer type)
-    if (status == OrderStatusFlowEngine.statusDryerAssigned ||
-        (status == OrderStatusFlowEngine.statusMachineAssigned &&
-            order.assignedMachineType == AppConstants.machineDryer)) {
+    // START DRYING (Dryer Assigned + dryer assigned)
+    if (status == OrderStatusFlowEngine.statusDryerAssigned &&
+        load.assignedDryerId != null) {
       buttons.add(
         _actionButton(
           label: 'Start Drying',
           icon: Icons.play_circle_fill,
           color: Colors.deepPurple,
           onPressed: () =>
-              _startMachine(machineProvider, order, AppConstants.machineDryer),
+              _startMachine(machineProvider, load, AppConstants.machineDryer),
         ),
       );
     }
 
-    // COMPLETE DRYING (Drying)
+    // COMPLETE DRYING (Drying) -> mark load Completed.
     if (status == OrderStatusFlowEngine.statusDrying) {
       buttons.add(
         _actionButton(
@@ -324,31 +325,11 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
           color: AppColors.success,
           onPressed: () => _completeStep(
             machineProvider,
-            order,
+            load,
             machineType: AppConstants.machineDryer,
-            nextStatus: OrderStatusFlowEngine.readyStatus(order),
+            nextStatus: OrderStatusFlowEngine.statusCompleted,
             serviceType: serviceType,
           ),
-        ),
-      );
-    }
-
-    // Ready status -> Completed (for pickup/delivery).
-    if (status == OrderStatusFlowEngine.statusReadyForPickup ||
-        status == OrderStatusFlowEngine.statusReadyForDelivery) {
-      buttons.add(
-        _actionButton(
-          label: 'Mark as Completed',
-          icon: Icons.check_circle,
-          color: AppColors.success,
-          onPressed: () async {
-            setState(() => _busy = true);
-            await context.read<OrderProvider>().updateOrderStatus(
-              order.id,
-              'Completed',
-            );
-            setState(() => _busy = false);
-          },
         ),
       );
     }
@@ -387,18 +368,20 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
     );
   }
 
-  /// Start the physical machine cycle. Only valid for a reserved machine.
-  /// This is the ONLY point the 38-minute timer begins.
+  /// Start the physical machine cycle for this load. Only valid for a
+  /// reserved machine. This is the ONLY point the 38-minute timer begins.
   Future<void> _startMachine(
     MachineProvider machineProvider,
-    OrderModel order,
+    OrderLoadModel load,
     String machineType,
   ) async {
-    final machineId = order.assignedMachineId;
+    final machineId = machineType == AppConstants.machineWasher
+        ? load.assignedWasherId
+        : load.assignedDryerId;
     if (machineId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('No machine assigned to this order.'),
+          content: Text('No machine assigned to this load.'),
           backgroundColor: Colors.orange,
         ),
       );
@@ -407,9 +390,10 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
 
     setState(() => _busy = true);
     final success = await machineProvider.startMachineStep(
-      orderId: order.id,
+      orderId: load.orderId,
       machineId: machineId,
       machineType: machineType,
+      loadId: load.id,
     );
     setState(() => _busy = false);
 
@@ -428,17 +412,16 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
 
   Future<void> _completeStep(
     MachineProvider machineProvider,
-    OrderModel order, {
+    OrderLoadModel load, {
     required String machineType,
     required String nextStatus,
     String? serviceType,
   }) async {
-    final machineId = order.assignedMachineId;
+    final machineId = machineType == AppConstants.machineWasher
+        ? load.assignedWasherId
+        : load.assignedDryerId;
     if (machineId == null) {
-      await context.read<OrderProvider>().updateOrderStatus(
-        order.id,
-        nextStatus,
-      );
+      await context.read<OrderProvider>().completeLoad(load);
       if (mounted) {
         ScaffoldMessenger.of(
           context,
@@ -449,11 +432,12 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
 
     setState(() => _busy = true);
     final effective = await machineProvider.completeMachineStep(
-      orderId: order.id,
+      orderId: load.orderId,
       machineType: machineType,
       machineId: machineId,
       nextStatus: nextStatus,
       serviceType: serviceType,
+      loadId: load.id,
     );
     setState(() => _busy = false);
 
@@ -469,9 +453,9 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
     );
   }
 
-  Widget _buildStatusFlow(OrderModel order) {
-    final statusFlow = OrderStatusFlowEngine.getFullFlow(order);
-    final currentIndex = statusFlow.indexOf(order.status.value);
+  Widget _buildStatusFlow(OrderLoadModel load) {
+    final statusFlow = OrderLoadEngine.getLoadFlow(load.serviceType);
+    final currentIndex = statusFlow.indexOf(load.status.value);
 
     return Card(
       child: Padding(
@@ -480,22 +464,27 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Status Flow',
+              'Load Status Flow',
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
             ...List.generate(statusFlow.length, (index) {
-              final isCompleted = index <= currentIndex;
+              final isCompleted =
+                  index <= currentIndex &&
+                  load.status.value !=
+                      OrderStatusFlowEngine.statusWaitingForMachine &&
+                  load.status.value !=
+                      OrderStatusFlowEngine.statusWaitingForDryer;
               return Padding(
                 padding: const EdgeInsets.symmetric(vertical: 2),
                 child: Row(
                   children: [
                     Icon(
-                      isCompleted
+                      isCompleted && index < currentIndex
                           ? Icons.check_circle
                           : Icons.radio_button_unchecked,
                       size: 20,
-                      color: isCompleted
+                      color: (isCompleted && index < currentIndex)
                           ? AppColors.success
                           : Colors.grey.shade400,
                     ),

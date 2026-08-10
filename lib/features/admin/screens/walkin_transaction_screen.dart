@@ -10,7 +10,9 @@ import '../../../providers/service_provider.dart';
 import '../../../providers/soap_provider.dart';
 import '../../../providers/auth_provider.dart';
 import '../../../engines/order_status_flow_engine.dart';
+import '../../../engines/order_load_engine.dart';
 import '../../../models/service_model.dart';
+import '../../../models/order_model.dart';
 
 class WalkinTransactionScreen extends StatefulWidget {
   const WalkinTransactionScreen({super.key});
@@ -148,8 +150,8 @@ class _WalkinTransactionScreenState extends State<WalkinTransactionScreen> {
             ? 'Paid'
             : 'Pending Verification',
         // Machine assignment is NOT done here. Cash walk-in orders go to
-        // 'Payment Verified' so staff can press "Start Washing"/"Start
-        // Drying" which atomically assigns the least-used available machine.
+        // 'Payment Verified' so the scheduler can split the order into loads
+        // (8kg per load) and auto-assign the least-used available machine.
         // GCash walk-in orders wait for admin payment verification.
         'status': _paymentMethod == 'Cash'
             ? OrderStatusFlowEngine.statusPaymentVerified
@@ -162,6 +164,29 @@ class _WalkinTransactionScreenState extends State<WalkinTransactionScreen> {
         'createdAt': DateTime.now().toIso8601String(),
         'updatedAt': DateTime.now().toIso8601String(),
       });
+
+      // Create the load records for this walk-in order (8kg per load) using
+      // the SAME load engine as online orders, so walk-ins share the same
+      // scheduling system and machine queues.
+      if (_paymentMethod == 'Cash') {
+        final orderObj = OrderModel.fromMap({
+          'id': orderId,
+          'userId': 'walkin_${orderId.substring(0, 6)}',
+          'serviceType': _selectedService!.name,
+          'weight': weight,
+          'deliveryMethod': 'Pickup',
+        }, orderId);
+        final loadIds = await OrderLoadEngine.createLoadsForOrder(
+          FirebaseFirestore.instance,
+          orderObj,
+        );
+        if (loadIds.isNotEmpty) {
+          await FirebaseFirestore.instance
+              .collection('orders')
+              .doc(orderId)
+              .update({'numberOfLoads': loadIds.length});
+        }
+      }
 
       setState(() => _isLoading = false);
 

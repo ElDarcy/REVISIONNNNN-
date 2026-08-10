@@ -38,24 +38,7 @@ class _DeliveryStaffHomeScreenState extends State<DeliveryStaffHomeScreen> {
     ];
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text('Delivery - ${user?.name ?? 'Staff'}'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () async {
-              await context.read<AuthProvider>().logout();
-              if (context.mounted) {
-                Navigator.pushNamedAndRemoveUntil(
-                  context,
-                  '/login',
-                  (route) => false,
-                );
-              }
-            },
-          ),
-        ],
-      ),
+      appBar: AppBar(title: Text('Delivery - ${user?.name ?? 'Staff'}')),
       body: IndexedStack(index: _index, children: screens),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
@@ -238,6 +221,25 @@ class _DeliveryProfileScreen extends StatelessWidget {
             title: const Text('Role'),
             subtitle: Text('Delivery Staff'),
           ),
+        ),
+        const SizedBox(height: 24),
+        OutlinedButton.icon(
+          onPressed: () async {
+            await context.read<AuthProvider>().logout();
+            if (context.mounted) {
+              Navigator.pushNamedAndRemoveUntil(
+                context,
+                '/login',
+                (route) => false,
+              );
+            }
+          },
+          style: OutlinedButton.styleFrom(
+            foregroundColor: AppColors.error,
+            side: const BorderSide(color: AppColors.error),
+          ),
+          icon: const Icon(Icons.logout),
+          label: const Text('Sign Out'),
         ),
       ],
     );

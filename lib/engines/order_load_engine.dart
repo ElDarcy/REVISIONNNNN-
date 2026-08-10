@@ -43,6 +43,10 @@ class OrderLoadEngine {
 
   /// Build the per-load status flow for a given service type.
   ///
+  /// Each load reaches `Completed` INDIVIDUALLY. The parent order only becomes
+  /// `Ready for Pickup` / `Ready for Delivery` when ALL its loads reach
+  /// Completed.
+  ///
   /// - Wash Only:  Waiting for Machine → Machine Assigned → Washing → Completed
   /// - Dry Only:   Waiting for Dryer → Dryer Assigned → Drying → Completed
   /// - Wash & Dry: Waiting for Machine → Machine Assigned → Washing →
@@ -62,7 +66,7 @@ class OrderLoadEngine {
       flow.add(OrderStatusFlowEngine.statusDryerAssigned);
       flow.add(OrderStatusFlowEngine.statusDrying);
     }
-    flow.add(OrderStatusFlowEngine.statusReadyForPickup);
+    flow.add(OrderStatusFlowEngine.statusCompleted);
     return flow;
   }
 
@@ -133,33 +137,35 @@ class OrderLoadEngine {
 
     final service = OrderStatusFlowEngine.resolveServiceType(order);
     final flow = getLoadFlow(service);
-    // Index of the most advanced status a load has reached so far.
-    int maxIndex = -1;
+
     var allCompleted = true;
+    // Track the most advanced NON-completed processing status so the parent
+    // reflects a valid "Processing" state while some loads are still running.
+    int maxProcessingIndex = -1;
 
     for (final load in loads) {
-      final idx = flow.indexOf(load.status.value);
-      if (idx > maxIndex) maxIndex = idx;
-      final isCompleted = load.status == LaundryStatus.completed;
-      final isDelivered = load.status == LaundryStatus.delivered;
-      if (!isCompleted && !isDelivered) {
+      final isCompleted =
+          load.status == LaundryStatus.completed ||
+          load.status == LaundryStatus.delivered;
+      if (!isCompleted) {
         allCompleted = false;
+        final idx = flow.indexOf(load.status.value);
+        if (idx > maxProcessingIndex) maxProcessingIndex = idx;
       }
     }
 
-    // All loads finished -> order is ready for pickup/delivery.
+    // ALL loads finished -> order becomes Ready for Pickup/Delivery.
     if (allCompleted) {
       return OrderStatusFlowEngine.readyStatus(order);
     }
 
-    // Otherwise reflect the most advanced processing status.
-    if (maxIndex >= 0 && maxIndex < flow.length) {
-      final status = flow[maxIndex];
-      // If the most advanced is a "ready" status but not all loads are done,
-      // keep the order in a processing state.
+    // Otherwise the parent is still Processing. Reflect the most advanced
+    // non-completed load status (never the "Completed" terminal step).
+    if (maxProcessingIndex >= 0 && maxProcessingIndex < flow.length) {
+      final status = flow[maxProcessingIndex];
       if (status == OrderStatusFlowEngine.statusReadyForPickup ||
           status == OrderStatusFlowEngine.statusReadyForDelivery) {
-        return flow.isNotEmpty ? flow[flow.length - 2] : status;
+        return OrderStatusFlowEngine.statusPaymentVerified;
       }
       return status;
     }

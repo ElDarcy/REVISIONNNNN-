@@ -174,6 +174,12 @@ class AdminDashboardScreen extends StatelessWidget {
                 ),
                 _buildActionTile(
                   context,
+                  Icons.precision_manufacturing,
+                  'Machine Management',
+                  '/admin/machine-management',
+                ),
+                _buildActionTile(
+                  context,
                   Icons.soap,
                   'Soap Inventory',
                   '/admin/soaps',

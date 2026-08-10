@@ -70,6 +70,19 @@ class AppConstants {
   static const String machineWashing = 'washing';
   static const String machineDrying = 'drying';
   static const String machineMaintenance = 'maintenance';
+  static const String machineBusy = 'busy';
+  static const String machineInactive = 'inactive';
+  static const String machineUnderInspection = 'under_inspection';
+
+  // Machine Issue Categories
+  static const String issueCategoryMechanical = 'Mechanical';
+  static const String issueCategoryElectrical = 'Electrical';
+  static const String issueCategoryOther = 'Other';
+
+  // Maintenance Record Statuses
+  static const String maintenancePending = 'Pending';
+  static const String maintenanceInProgress = 'In Progress';
+  static const String maintenanceCompleted = 'Completed';
 
   // Order Statuses
   static const String statusMachineAssigned = 'Machine Assigned';

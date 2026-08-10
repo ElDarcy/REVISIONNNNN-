@@ -1,81 +1,34 @@
-# Multiple Load Order Support Implementation
+# Machine Management, Maintenance Control, and Customer Availability Display
 
-## Overview
-Implement support for orders exceeding machine capacity (8kg per machine).
+## Task 1: Constants & Status Definitions
+- [x] **1.1** Add machine statuses: `busy`, `inactive`, `under_inspection` to `app_constants.dart`.
+- [x] **1.2** Existing statuses (`reserved`, `washing`, `drying`) kept intact for the scheduler.
 
-## Completed Steps
+## Task 2: Models
+- [x] **2.1** Updated `machine_model.dart`: added `isBusy`, `isInactive`, `isUnderInspection`; updated `isAvailable`/`isInUse` to only count `available` as available and reserved/busy/washing/drying as in-use.
+- [x] **2.2** Created `maintenance_record_model.dart` (maintenanceId, machineId, machineType, reason, reportedBy, startedAt, expectedCompletionDate, completedAt, status, notes).
+- [x] **2.3** Created `machine_issue_model.dart` (machineId, issueCategory, description, reportedBy, reportedAt).
 
-- [x] **1. Create `OrderLoadModel`** — New model for individual load records
-- [x] **2. Create `OrderLoadEngine`** — Engine for splitting orders into loads and deriving parent status
-- [x] **3. Add `currentLoadId` to `MachineModel`** — Track which load a machine is assigned to
-- [x] **4. Add `numberOfLoads` & `loadIds` to `OrderModel`** — Parent order metadata
-- [x] **5. Update `OrderProvider`**
-  - `approveOrder()`: Creates load records after approval
-  - `streamOrderLoads()` / `streamAllLoads()` / `getLoadsForOrder()` / `completeLoad()`
-  - `completeLoad()`: Marks a load completed, re-derives parent order status from all loads
-  - `_ensureOrderInDeliveryQueue()`: Inserts order into delivery queue when all loads ready
-- [x] **6. Update `MachineProvider`**
-  - `assignMachineToLoad()`: Per-load machine assignment
-  - `scheduleOrderLoads()`: Schedules all loads of an order independently
-  - `scheduleSingleLoad()`: Schedules one load
-  - `_deriveParentOrderStatus()`: Re-derives parent order status from all loads
-  - `completeMachineStep()`: load-aware with dryer handoff + `currentLoadId`
-  - `startMachineStep()`: Load-aware cycle timing
-  - `_addToLaundryQueue()`: Queue for waiting loads (by loadId)
-  - `_scheduleVerifiedOrder()` → `scheduleOrderLoads()`: Per-load scheduling
-  - `setMaintenance()`: Clears `currentLoadId`
-- [x] **7. Update `WalkinTransactionScreen`** — Creates load records for walk-in orders
-- [x] **8. Update `LaundryTaskScreen`** — Displays individual loads, per-load action buttons
-- [x] **9. Update `StaffHomeScreen::LaundryTasksTab`** — Shows loads list instead of orders
-- [x] **10. Update `OrderTrackingScreen`** — Shows individual load progress
-- [x] **11. Update `OrderHistoryScreen`** — Shows loads per order
-- [x] **12. Update `HomeScreen`** — Shows loads in active orders
-- [x] **13. Update `MachineMonitorScreen`** — Uses `currentLoadId` for live timer
-- [x] **14. Update `OrderStatusFlowEngine`** — Adds per-load status constants
-- [x] **15. Update `AppConstants`** — Adds load flow constants
-- [x] **16. Add `orderLoads` to `firebase_rules.txt`** — Firestore security rules
-- [x] **17. Add `orderLoads` to `database_structure.md`** — Database documentation
+## Task 3: Provider (RBAC + business logic)
+- [x] **3.1** `updateMachineStatus(machineId, status)` — admin-only, active-load protection.
+- [x] **3.2** `addMaintenanceRecord(...)` — creates record + sets machine to maintenance.
+- [x] **3.3** `completeMaintenance(...)` — admin returns machine to available.
+- [x] **3.4** `reportMachineIssue(...)` — staff submits issue; sets machine to under_inspection (after load completes if active).
+- [x] **3.5** `streamMaintenanceRecords()` / `streamMachineIssues()`.
+- [x] **3.6** Scheduler ignores busy/inactive/under_inspection (only available assignable).
 
-## Fixes
+## Task 4: Admin Machine Management Screen
+- [x] **4.1** Created `admin_machine_management_screen.dart` — view all machines, change status, add maintenance records, complete maintenance.
 
-- [x] **18. Fix Admin "Assign Staff" empty list** — `manage_orders_screen.dart`
-  `_fetchStaffUsers()` queried `role == 'staff'`, but laundry staff are stored
-  with role `'laundry_staff'` (see `role_model.dart`). Changed to
-  `whereIn: ['staff', 'laundry_staff']` so all registered laundry staff appear.
-- [x] **19. Laundry Task screen navigation** — Added a back button in the AppBar
-  and a "Back to Dashboard" button in the completed/all-tasks-done state so
-  staff can return to the main screen.
+## Task 5: Staff Machine Access
+- [x] **5.1** Updated `machine_monitor_screen.dart` — added "Report Issue" (categories + description). Staff cannot set maintenance/inactive.
 
-## Implementation Details
+## Task 6: Customer Availability Display
+- [x] **6.1** Customer capacity view in `home_screen.dart` — Available = available only; In-use = reserved/busy/washing/drying; excludes maintenance/inactive/under_inspection from available.
 
-### Machine Capacity
-- Each washing machine capacity = 8kg
-- If customer laundry weight > 8kg: `numberOfLoads = ceil(totalWeight / 8)`
-- Example: 20kg → Load 1=8kg, Load 2=8kg, Load 3=4kg
+## Task 7: Routing & Integration
+- [x] **7.1** Registered admin machine management route in `app.dart` + `app_routes.dart`.
+- [x] **7.2** Added "Machine Management" action tile to `admin_dashboard_screen.dart`.
 
-### `orderLoads` Collection
-Each load document:
-```json
-{
-  loadId: string,
-  orderId: string,
-  loadNumber: int,
-  weight: double,
-  serviceType: string,
-  machineType: string,
-  machineId: string,
-  status: string,
-  cycleStart: timestamp,
-  estimatedFinish: timestamp
-}
-```
-
-### Per-Load Status Flow
-```
-Waiting for Machine → Machine Assigned → Washing → Drying → Completed
-```
-
-### Parent Order Status
-- Based on all load statuses
-- "Ready for Pickup/Delivery" only when ALL loads are completed
-
+## Task 8: Verification
+- [x] **8.1** `flutter analyze` — 33 issues (baseline, all info/warning level), no new errors.

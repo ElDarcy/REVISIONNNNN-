@@ -4,6 +4,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/machine_model.dart';
 import '../models/order_model.dart';
 import '../models/order_load_model.dart';
+import '../models/maintenance_record_model.dart';
+import '../models/machine_issue_model.dart';
 import '../engines/order_status_flow_engine.dart';
 import '../engines/order_load_engine.dart';
 import '../core/constants/app_constants.dart';
@@ -334,15 +336,16 @@ class MachineProvider extends ChangeNotifier {
             'currentLoadId': loadId,
           });
 
+          // Store washer/dryer separately on the load (not a single machineId).
+          final isWasher = machineType == AppConstants.machineWasher;
           transaction.update(_firestore.collection('orderLoads').doc(loadId), {
             'status': targetStatus,
-            'machineId': machineId,
-            'machineNumber': machineNumber,
-            'machineType': machineType,
+            if (isWasher) 'washerId': machineId else 'dryerId': machineId,
             'updatedAt': Timestamp.now(),
           });
 
-          // Mirror onto parent order for backward compatibility.
+          // Mirror aggregated machine assignment onto the parent order for
+          // backward compatibility (analytics/dashboard reads).
           transaction.update(_firestore.collection('orders').doc(orderId), {
             'status': targetStatus,
             'assignedMachineId': machineId,
@@ -516,15 +519,16 @@ class MachineProvider extends ChangeNotifier {
         }
 
         // Update the load document (per-load status + machine handoff).
+        // When completing WASHING, release the washer and (if in Wash & Dry)
+        // assign a dryer -> store/clear the correct washerId/dryerId fields.
+        // When completing DRYING, clear the dryerId.
         if (loadId != null && loadId.isNotEmpty) {
+          final isWashStep = machineType == AppConstants.machineWasher;
           transaction.update(_firestore.collection('orderLoads').doc(loadId), {
             'status': effectiveStatus,
-            if (dryerId != null) 'machineId': dryerId,
-            if (dryerId != null) 'machineType': AppConstants.machineDryer,
-            if (dryerId != null) 'machineNumber': dryerNumber,
-            if (dryerId == null) 'machineId': null,
-            if (dryerId == null) 'machineType': null,
-            if (dryerId == null) 'machineNumber': null,
+            if (isWashStep) 'washerId': null,
+            if (isWashStep && dryerId != null) 'dryerId': dryerId,
+            if (!isWashStep) 'dryerId': null,
             'updatedAt': Timestamp.now(),
           });
         }
@@ -544,7 +548,11 @@ class MachineProvider extends ChangeNotifier {
         // If the dryer handoff failed (no dryer available), add the order to
         // the laundryQueue for the dryer so the scheduler can assign it later.
         if (effectiveStatus == OrderStatusFlowEngine.statusWaitingForDryer) {
-          await _addToLaundryQueue(orderId, AppConstants.machineDryer);
+          await _addLoadToQueue(
+            loadId: loadId ?? '',
+            orderId: orderId,
+            machineType: AppConstants.machineDryer,
+          );
         }
 
         return effectiveStatus;
@@ -778,7 +786,11 @@ class MachineProvider extends ChangeNotifier {
         'status': OrderStatusFlowEngine.statusWaitingForMachine,
         'updatedAt': Timestamp.now(),
       });
-      await _addToLaundryQueue(orderId, AppConstants.machineWasher);
+      await _addLoadToQueue(
+        loadId: load.id,
+        orderId: orderId,
+        machineType: AppConstants.machineWasher,
+      );
       return false;
     }
 
@@ -795,7 +807,11 @@ class MachineProvider extends ChangeNotifier {
         'status': OrderStatusFlowEngine.statusWaitingForDryer,
         'updatedAt': Timestamp.now(),
       });
-      await _addToLaundryQueue(orderId, AppConstants.machineDryer);
+      await _addLoadToQueue(
+        loadId: load.id,
+        orderId: orderId,
+        machineType: AppConstants.machineDryer,
+      );
       return false;
     }
 
@@ -830,7 +846,10 @@ class MachineProvider extends ChangeNotifier {
         'status': OrderStatusFlowEngine.statusWaitingForMachine,
         'updatedAt': Timestamp.now(),
       });
-      await _addToLaundryQueue(orderId, AppConstants.machineWasher);
+      await _addLoadToQueue(
+        orderId: orderId,
+        machineType: AppConstants.machineWasher,
+      );
       return false;
     }
 
@@ -847,24 +866,38 @@ class MachineProvider extends ChangeNotifier {
         'status': OrderStatusFlowEngine.statusWaitingForDryer,
         'updatedAt': Timestamp.now(),
       });
-      await _addToLaundryQueue(orderId, AppConstants.machineDryer);
+      await _addLoadToQueue(
+        orderId: orderId,
+        machineType: AppConstants.machineDryer,
+      );
       return false;
     }
 
     return false;
   }
 
-  /// Insert an order into the `laundryQueue` collection when no machine of the
+  /// Insert a LOAD into the `laundryQueue` collection when no machine of the
   /// required type is available. Used for both washer and dryer waits.
-  Future<void> _addToLaundryQueue(String orderId, String machineType) async {
+  /// The queue is keyed by [loadId] so each load (not just order) is tracked
+  /// independently across all orders and customers. When [loadId] is empty
+  /// (legacy order-level scheduling), it falls back to dedup by [orderId].
+  Future<void> _addLoadToQueue({
+    String loadId = '',
+    required String orderId,
+    required String machineType,
+  }) async {
     try {
       final existing = await _firestore
           .collection('laundryQueue')
-          .where('orderId', isEqualTo: orderId)
+          .where(
+            loadId.isNotEmpty ? 'loadId' : 'orderId',
+            isEqualTo: loadId.isNotEmpty ? loadId : orderId,
+          )
           .get();
       if (existing.docs.isNotEmpty) return;
 
       await _firestore.collection('laundryQueue').add({
+        if (loadId.isNotEmpty) 'loadId': loadId,
         'orderId': orderId,
         'queueType': machineType == AppConstants.machineWasher
             ? 'washer'
@@ -874,7 +907,7 @@ class MachineProvider extends ChangeNotifier {
         'createdAt': Timestamp.now(),
       });
     } catch (e) {
-      debugPrint('_addToLaundryQueue error: $e');
+      debugPrint('_addLoadToQueue error: $e');
     }
   }
 
@@ -971,11 +1004,15 @@ class MachineProvider extends ChangeNotifier {
         });
 
         if (loadId != null && loadId.isNotEmpty) {
-          // Per-load cycle timer + status.
+          // Per-load wash/dry cycle timer + status. Store the correct cycle
+          // timestamps and machine id on the load.
+          final isWash = machineType == AppConstants.machineWasher;
           transaction.update(_firestore.collection('orderLoads').doc(loadId), {
             'status': runStatus,
-            'cycleStart': now,
-            'estimatedFinish': estimatedFinish,
+            if (isWash) 'washCycleStart': now,
+            if (isWash) 'washEstimatedFinish': estimatedFinish,
+            if (!isWash) 'dryCycleStart': now,
+            if (!isWash) 'dryEstimatedFinish': estimatedFinish,
             'updatedAt': now,
           });
         }
@@ -1021,11 +1058,12 @@ class MachineProvider extends ChangeNotifier {
 
       if (washerCandidates.isEmpty && dryerCandidates.isEmpty) return;
 
-      // Fetch waiting orders and sort oldest-first in code (FIFO queue
-      // priority). Sorting client-side avoids requiring a composite index on
-      // status + createdAt in Firestore.
+      // Fetch waiting LOADS (fully load-based scheduling) and sort
+      // oldest-first in code (FIFO queue priority). This works across ALL
+      // orders and customers. Sorting client-side avoids requiring a
+      // composite index on status + createdAt in Firestore.
       final waitingSnap = await _firestore
-          .collection('orders')
+          .collection('orderLoads')
           .where(
             'status',
             whereIn: [
@@ -1045,16 +1083,21 @@ class MachineProvider extends ChangeNotifier {
         });
 
       for (final doc in waitingDocs) {
-        final orderData = doc.data();
-        final status = orderData['status'] as String?;
-        final orderId = doc.id;
+        final loadData = doc.data();
+        final status = loadData['status'] as String?;
+        final loadId = doc.id;
+        final orderId = loadData['orderId'] as String? ?? '';
+        final serviceType = loadData['serviceType'] as String? ?? '';
 
         if (status == OrderStatusFlowEngine.statusWaitingForMachine) {
           if (washerCandidates.isEmpty) continue;
-          final assigned = await _tryAssignFromCandidates(
+          final assigned = await _tryAssignLoadFromCandidates(
             washerCandidates,
-            orderId,
-            OrderStatusFlowEngine.statusMachineAssigned,
+            loadId: loadId,
+            orderId: orderId,
+            serviceType: serviceType,
+            targetStatus: OrderStatusFlowEngine.statusMachineAssigned,
+            machineType: AppConstants.machineWasher,
           );
           if (assigned != null) {
             washerCandidates.remove(assigned);
@@ -1062,10 +1105,13 @@ class MachineProvider extends ChangeNotifier {
           }
         } else if (status == OrderStatusFlowEngine.statusWaitingForDryer) {
           if (dryerCandidates.isEmpty) continue;
-          final assigned = await _tryAssignFromCandidates(
+          final assigned = await _tryAssignLoadFromCandidates(
             dryerCandidates,
-            orderId,
-            OrderStatusFlowEngine.statusDryerAssigned,
+            loadId: loadId,
+            orderId: orderId,
+            serviceType: serviceType,
+            targetStatus: OrderStatusFlowEngine.statusDryerAssigned,
+            machineType: AppConstants.machineDryer,
           );
           if (assigned != null) {
             dryerCandidates.remove(assigned);
@@ -1111,48 +1157,64 @@ class MachineProvider extends ChangeNotifier {
     }
   }
 
-  /// Try to assign a specific machine [candidateIds].first to [orderId]
-  /// using the transaction-based reservation. Returns the assigned machine id
-  /// (or null if all candidates were taken/retries exhausted).
-  Future<String?> _tryAssignFromCandidates(
-    List<String> candidateIds,
-    String orderId,
-    String targetStatus,
-  ) async {
+  /// Try to assign a machine from [candidateIds] to a LOAD (queue processor).
+  /// Returns the assigned machine id or null if all candidates were taken.
+  Future<String?> _tryAssignLoadFromCandidates(
+    List<String> candidateIds, {
+    required String loadId,
+    required String orderId,
+    required String serviceType,
+    required String targetStatus,
+    required String machineType,
+  }) async {
     for (final machineId in candidateIds) {
-      final assigned = await _assignSpecificMachine(
+      final assigned = await _assignLoadSpecificMachine(
         machineId: machineId,
+        loadId: loadId,
         orderId: orderId,
+        serviceType: serviceType,
         targetStatus: targetStatus,
+        machineType: machineType,
       );
       if (assigned != null) return machineId;
     }
     return null;
   }
 
-  /// Atomically reserve a specific machine for an order inside a transaction.
-  /// Returns the machine id when the machine was still available and assigned.
-  Future<String?> _assignSpecificMachine({
+  /// Atomically reserve a specific machine for a LOAD inside a transaction.
+  /// Writes the washer/dryer id onto the load and mirrors onto the parent
+  /// order. Returns the machine id when successfully assigned.
+  Future<String?> _assignLoadSpecificMachine({
     required String machineId,
+    required String loadId,
     required String orderId,
+    required String serviceType,
     required String targetStatus,
+    required String machineType,
   }) async {
     try {
       final machineRef = _firestore.collection('machines').doc(machineId);
-      final machineSnap = await _firestore.runTransaction((transaction) async {
+      final result = await _firestore.runTransaction((transaction) async {
         final doc = await transaction.get(machineRef);
         if (!doc.exists) return null;
         final data = doc.data()!;
-        final status = (data['status'] ?? '') as String;
-        if (status != AppConstants.machineAvailable) return null;
-
-        final machineType = data['type'] as String? ?? '';
+        if ((data['status'] ?? '') != AppConstants.machineAvailable) {
+          return null;
+        }
         final machineNumber = ((data['machineNumber'] ?? 0) as num).toInt();
+        final isWasher = machineType == AppConstants.machineWasher;
 
         // Reserve only - do NOT set to washing/drying, do NOT bump usage.
         transaction.update(machineRef, {
           'status': AppConstants.machineReserved,
           'currentOrderId': orderId,
+          'currentLoadId': loadId,
+        });
+
+        transaction.update(_firestore.collection('orderLoads').doc(loadId), {
+          'status': targetStatus,
+          if (isWasher) 'washerId': machineId else 'dryerId': machineId,
+          'updatedAt': Timestamp.now(),
         });
 
         transaction.update(_firestore.collection('orders').doc(orderId), {
@@ -1166,18 +1228,16 @@ class MachineProvider extends ChangeNotifier {
         return machineId;
       });
 
-      if (machineSnap != null) {
-        // Queue-processor assignment path: log the reservation for the
-        // full audit trail (same as assignMachineToOrder).
+      if (result != null) {
         await logMachineActivity(
           machineId: machineId,
           orderId: orderId,
           action: AppConstants.machineLogReserved,
         );
       }
-      return machineSnap;
+      return result;
     } catch (e) {
-      debugPrint('_assignSpecificMachine error: $e');
+      debugPrint('_assignLoadSpecificMachine error: $e');
       return null;
     }
   }
@@ -1253,6 +1313,326 @@ class MachineProvider extends ChangeNotifier {
       debugPrint('resetUsageCount error: $e');
       return false;
     }
+  }
+
+  /// Whether the given user (by role) is permitted to modify machine status.
+  ///
+  /// Only Admin may change machine status, set maintenance, set a machine
+  /// inactive, or complete maintenance. Staff/customers are rejected.
+  bool canModifyMachineStatus() {
+    // Role is read from the current authenticated user via AuthProvider.
+    // This provider does not hold auth state directly; callers (screens)
+    // must pass an `isAdmin` flag. This helper returns the flag semantics
+    // documented above. The actual enforcement lives in the screen + the
+    // Firestore security rules (see database/firebase_rules.txt).
+    return false; // Overridden by callers passing isAdmin explicitly.
+  }
+
+  /// ADMIN-ONLY: Update a machine's status.
+  ///
+  /// Enforces role-based access control at the provider level. Active-load
+  /// protection: if the machine currently has an in-progress load
+  /// (reserved/washing/drying), the status is NOT forcibly overwritten to a
+  /// non-active state unless [force] is true. Existing active loads continue
+  /// until completion; the machine simply cannot receive new assignments.
+  ///
+  /// Allowed status values: available, busy, maintenance, inactive,
+  /// under_inspection.
+  Future<bool> updateMachineStatus({
+    required String machineId,
+    required String status,
+    required bool isAdmin,
+    bool force = false,
+  }) async {
+    if (!isAdmin) {
+      debugPrint('updateMachineStatus REJECTED: not an admin');
+      return false;
+    }
+    final allowedStatuses = {
+      AppConstants.machineAvailable,
+      AppConstants.machineBusy,
+      AppConstants.machineMaintenance,
+      AppConstants.machineInactive,
+      AppConstants.machineUnderInspection,
+    };
+    if (!allowedStatuses.contains(status)) {
+      debugPrint('updateMachineStatus REJECTED: invalid status $status');
+      return false;
+    }
+    try {
+      final machineRef = _firestore.collection('machines').doc(machineId);
+      final snap = await machineRef.get();
+      if (!snap.exists) return false;
+      final data = snap.data()!;
+      final currentStatus = (data['status'] ?? '') as String;
+      final hasActiveLoad =
+          data['currentOrderId'] != null || data['currentLoadId'] != null;
+
+      // Active-load protection: never interrupt an in-progress load.
+      if (hasActiveLoad &&
+          (currentStatus == AppConstants.machineWashing ||
+              currentStatus == AppConstants.machineDrying ||
+              currentStatus == AppConstants.machineReserved) &&
+          !force) {
+        // The load may continue; we only mark the machine so it cannot get
+        // new assignments. We do NOT wipe the active load references.
+        await machineRef.update({
+          'pendingStatus': status,
+          'updatedAt': Timestamp.now(),
+        });
+        debugPrint(
+          'updateMachineStatus: machine $machineId has active load; '
+          'queued pendingStatus=$status',
+        );
+        return true;
+      }
+
+      // Clear load references when transitioning away from an active machine.
+      final clearsLoad =
+          status == AppConstants.machineAvailable ||
+          status == AppConstants.machineMaintenance ||
+          status == AppConstants.machineInactive;
+      await machineRef.update({
+        'status': status,
+        if (clearsLoad) 'currentOrderId': null,
+        if (clearsLoad) 'currentLoadId': null,
+        'lastUsedAt': Timestamp.now(),
+        'updatedAt': Timestamp.now(),
+      });
+      await logMachineActivity(
+        machineId: machineId,
+        action: 'Status -> $status',
+      );
+      _machines = _machines
+          .map((m) => m.id == machineId ? m.copyWith(status: status) : m)
+          .toList();
+      notifyListeners();
+      return true;
+    } catch (e) {
+      debugPrint('updateMachineStatus error: $e');
+      return false;
+    }
+  }
+
+  /// ADMIN-ONLY: Add a maintenance record and set the machine to maintenance.
+  ///
+  /// If the machine has an active load, the machine is NOT immediately set to
+  /// maintenance; instead the pending status is recorded so it transitions
+  /// after the load completes. Returns the maintenance record id.
+  Future<String?> addMaintenanceRecord({
+    required String machineId,
+    required String machineType,
+    required String reason,
+    required String reportedBy,
+    required bool isAdmin,
+    DateTime? expectedCompletionDate,
+    String notes = '',
+  }) async {
+    if (!isAdmin) {
+      debugPrint('addMaintenanceRecord REJECTED: not an admin');
+      return null;
+    }
+    try {
+      final maintenanceRef = _firestore.collection('maintenanceRecords').doc();
+      final record = MaintenanceRecordModel(
+        maintenanceId: maintenanceRef.id,
+        machineId: machineId,
+        machineType: machineType,
+        reason: reason,
+        reportedBy: reportedBy,
+        startedAt: DateTime.now(),
+        expectedCompletionDate: expectedCompletionDate,
+        status: AppConstants.maintenanceInProgress,
+        notes: notes,
+      );
+
+      final machineRef = _firestore.collection('machines').doc(machineId);
+      final snap = await machineRef.get();
+      if (!snap.exists) return null;
+      final data = snap.data()!;
+      final currentStatus = (data['status'] ?? '') as String;
+      final hasActiveLoad =
+          data['currentOrderId'] != null || data['currentLoadId'] != null;
+
+      // Append to maintenance history on the machine.
+      final historyRaw = data['maintenanceHistory'] as List<dynamic>? ?? [];
+      final nextHistory = [
+        ...historyRaw,
+        {
+          'maintenanceId': maintenanceRef.id,
+          'reason': reason,
+          'startedAt': Timestamp.now(),
+          'status': AppConstants.maintenanceInProgress,
+        },
+      ];
+
+      await _firestore.runTransaction((transaction) async {
+        transaction.set(maintenanceRef, record.toMap());
+        if (hasActiveLoad &&
+            (currentStatus == AppConstants.machineWashing ||
+                currentStatus == AppConstants.machineDrying ||
+                currentStatus == AppConstants.machineReserved)) {
+          // Do not interrupt the active load; queue the transition.
+          transaction.update(machineRef, {
+            'pendingStatus': AppConstants.machineMaintenance,
+            'maintenanceHistory': nextHistory,
+            'updatedAt': Timestamp.now(),
+          });
+        } else {
+          transaction.update(machineRef, {
+            'status': AppConstants.machineMaintenance,
+            'currentOrderId': null,
+            'currentLoadId': null,
+            'pendingStatus': null,
+            'maintenanceHistory': nextHistory,
+            'updatedAt': Timestamp.now(),
+          });
+        }
+      });
+
+      await logMachineActivity(
+        machineId: machineId,
+        action: AppConstants.machineLogMaintenance,
+      );
+      return maintenanceRef.id;
+    } catch (e) {
+      debugPrint('addMaintenanceRecord error: $e');
+      return null;
+    }
+  }
+
+  /// ADMIN-ONLY: Complete a maintenance record and return the machine to
+  /// Available. Clears any pending status and refreshes lastUsedAt.
+  Future<bool> completeMaintenance({
+    required String maintenanceId,
+    required String machineId,
+    required bool isAdmin,
+  }) async {
+    if (!isAdmin) {
+      debugPrint('completeMaintenance REJECTED: not an admin');
+      return false;
+    }
+    try {
+      await _firestore.runTransaction((transaction) async {
+        final maintenanceRef = _firestore
+            .collection('maintenanceRecords')
+            .doc(maintenanceId);
+        transaction.update(maintenanceRef, {
+          'status': AppConstants.maintenanceCompleted,
+          'completedAt': Timestamp.now(),
+        });
+
+        final machineRef = _firestore.collection('machines').doc(machineId);
+        transaction.update(machineRef, {
+          'status': AppConstants.machineAvailable,
+          'pendingStatus': null,
+          'currentOrderId': null,
+          'currentLoadId': null,
+          'lastUsedAt': Timestamp.now(),
+          'updatedAt': Timestamp.now(),
+        });
+      });
+      await logMachineActivity(
+        machineId: machineId,
+        action: 'Maintenance Completed',
+      );
+      return true;
+    } catch (e) {
+      debugPrint('completeMaintenance error: $e');
+      return false;
+    }
+  }
+
+  /// STAFF: Report a machine issue. Sets the machine to 'under_inspection'
+  /// (after any active load completes). Returns the issue id.
+  Future<String?> reportMachineIssue({
+    required String machineId,
+    required String issueCategory,
+    required String description,
+    required String reportedBy,
+  }) async {
+    try {
+      final issueRef = _firestore.collection('machineIssues').doc();
+      final issue = MachineIssueModel(
+        issueId: issueRef.id,
+        machineId: machineId,
+        issueCategory: issueCategory,
+        description: description,
+        reportedBy: reportedBy,
+        reportedAt: DateTime.now(),
+      );
+
+      final machineRef = _firestore.collection('machines').doc(machineId);
+      final snap = await machineRef.get();
+      if (!snap.exists) return null;
+      final data = snap.data()!;
+      final currentStatus = (data['status'] ?? '') as String;
+      final hasActiveLoad =
+          data['currentOrderId'] != null || data['currentLoadId'] != null;
+
+      await _firestore.runTransaction((transaction) async {
+        transaction.set(issueRef, issue.toMap());
+        if (hasActiveLoad &&
+            (currentStatus == AppConstants.machineWashing ||
+                currentStatus == AppConstants.machineDrying ||
+                currentStatus == AppConstants.machineReserved)) {
+          // Do not interrupt the load; queue the transition.
+          transaction.update(machineRef, {
+            'pendingStatus': AppConstants.machineUnderInspection,
+            'updatedAt': Timestamp.now(),
+          });
+        } else {
+          transaction.update(machineRef, {
+            'status': AppConstants.machineUnderInspection,
+            'pendingStatus': null,
+            'updatedAt': Timestamp.now(),
+          });
+        }
+      });
+
+      await logMachineActivity(
+        machineId: machineId,
+        action: 'Issue reported: $issueCategory',
+      );
+      return issueRef.id;
+    } catch (e) {
+      debugPrint('reportMachineIssue error: $e');
+      return null;
+    }
+  }
+
+  /// Real-time stream of maintenance records (newest first).
+  Stream<List<MaintenanceRecordModel>> streamMaintenanceRecords() {
+    return _firestore
+        .collection('maintenanceRecords')
+        .orderBy('startedAt', descending: true)
+        .snapshots()
+        .map(
+          (snapshot) => snapshot.docs
+              .map((doc) => MaintenanceRecordModel.fromMap(doc.data(), doc.id))
+              .toList(),
+        )
+        .handleError((error) {
+          debugPrint('streamMaintenanceRecords error: $error');
+          return <MaintenanceRecordModel>[];
+        });
+  }
+
+  /// Real-time stream of machine issues (newest first).
+  Stream<List<MachineIssueModel>> streamMachineIssues() {
+    return _firestore
+        .collection('machineIssues')
+        .orderBy('reportedAt', descending: true)
+        .snapshots()
+        .map(
+          (snapshot) => snapshot.docs
+              .map((doc) => MachineIssueModel.fromMap(doc.data(), doc.id))
+              .toList(),
+        )
+        .handleError((error) {
+          debugPrint('streamMachineIssues error: $error');
+          return <MachineIssueModel>[];
+        });
   }
 
   static DateTime? _toDateTime(dynamic value) {

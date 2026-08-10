@@ -5,12 +5,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../models/machine_model.dart';
+import '../../../providers/auth_provider.dart';
 import '../../../providers/machine_provider.dart';
 
 /// Staff real-time machine monitoring screen.
 ///
 /// Displays all 18 machines (9 washing, 9 drying) with live status from
 /// Firestore. Updates automatically whenever any machine document changes.
+/// Staff can view machine availability and report issues.
 class MachineMonitorScreen extends StatelessWidget {
   const MachineMonitorScreen({super.key});
 
@@ -271,22 +273,123 @@ class _MachineCardState extends State<_MachineCard> {
           ],
         ),
         isThreeLine: true,
-        trailing: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Text(
-            statusText,
-            style: TextStyle(
-              color: color,
-              fontWeight: FontWeight.w600,
-              fontSize: 12,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                statusText,
+                style: TextStyle(
+                  color: color,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 12,
+                ),
+              ),
             ),
-          ),
+            IconButton(
+              tooltip: 'Report issue',
+              icon: const Icon(Icons.report_problem_outlined),
+              color: AppColors.error,
+              onPressed: () => _showReportIssueDialog(context),
+            ),
+          ],
         ),
       ),
+    );
+  }
+
+  /// Staff submit a machine issue. Staff can view status and report issues
+  /// but CANNOT change status to maintenance/inactive directly.
+  void _showReportIssueDialog(BuildContext context) {
+    final machineProvider = context.read<MachineProvider>();
+    final authProvider = context.read<AuthProvider>();
+    String? selectedCategory = AppConstants.issueCategoryMechanical;
+    final descriptionCtrl = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text('Report Issue - ${machine.displayName}'),
+          content: Form(
+            key: formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DropdownButtonFormField<String>(
+                  initialValue: selectedCategory,
+                  decoration: const InputDecoration(
+                    labelText: 'Issue Category',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: AppConstants.issueCategoryMechanical,
+                      child: Text('Mechanical'),
+                    ),
+                    DropdownMenuItem(
+                      value: AppConstants.issueCategoryElectrical,
+                      child: Text('Electrical'),
+                    ),
+                    DropdownMenuItem(
+                      value: AppConstants.issueCategoryOther,
+                      child: Text('Other'),
+                    ),
+                  ],
+                  onChanged: (v) => selectedCategory = v,
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: descriptionCtrl,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    labelText: 'Describe the issue',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (v) =>
+                      (v == null || v.isEmpty) ? 'Enter a description' : null,
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                if (!formKey.currentState!.validate()) return;
+                final id = await machineProvider.reportMachineIssue(
+                  machineId: machine.id,
+                  issueCategory: selectedCategory ?? 'Other',
+                  description: descriptionCtrl.text.trim(),
+                  reportedBy: authProvider.user?.name ?? 'Staff',
+                );
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        id != null
+                            ? 'Issue reported. Machine set to Under Inspection.'
+                            : 'Failed to report issue.',
+                      ),
+                    ),
+                  );
+                }
+              },
+              child: const Text('Submit'),
+            ),
+          ],
+        );
+      },
     );
   }
 

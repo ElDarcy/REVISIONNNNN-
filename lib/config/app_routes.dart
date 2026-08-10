@@ -38,6 +38,7 @@ class AppRoutes {
   static const String deliveryMonitor = '/admin/delivery-monitor';
   static const String reports = '/admin/reports';
   static const String machineAnalytics = '/admin/machine-analytics';
+  static const String machineManagement = '/admin/machine-management';
   static const String receiptPrint = '/admin/print-receipt';
   static const String soapInventory = '/admin/soaps';
 
