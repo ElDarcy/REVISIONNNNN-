@@ -32,7 +32,48 @@ class _AdminMachineManagementScreenState
     final machineProvider = context.read<MachineProvider>();
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Machine Management')),
+      appBar: AppBar(
+        title: const Text('Machine Management'),
+        actions: [
+          if (isAdmin)
+            IconButton(
+              tooltip: 'Restore Deleted Machines',
+              icon: const Icon(Icons.restore),
+              onPressed: () async {
+                final confirmed = await showDialog<bool>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: const Text('Restore Machines?'),
+                    content: const Text(
+                      'This will recreate the default set of 18 machines (9 washers, 9 dryers). Existing machines will not be modified.',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Cancel'),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('Restore'),
+                      ),
+                    ],
+                  ),
+                );
+
+                if (confirmed == true) {
+                  await machineProvider.seedDefaultMachines();
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Machines collection restored successfully.'),
+                      ),
+                    );
+                  }
+                }
+              },
+            ),
+        ],
+      ),
       body: StreamBuilder<List<MachineModel>>(
         stream: machineProvider.streamMachines(),
         builder: (context, snapshot) {
@@ -41,8 +82,30 @@ class _AdminMachineManagementScreenState
           }
           final machines = snapshot.data ?? [];
           if (machines.isEmpty) {
-            return const Center(
-              child: Text('No machines found', style: TextStyle(fontSize: 18)),
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.precision_manufacturing_outlined, size: 64, color: Colors.grey),
+                  const SizedBox(height: 16),
+                  const Text('No machines found', style: TextStyle(fontSize: 18)),
+                  if (isAdmin) ...[
+                    const SizedBox(height: 24),
+                    ElevatedButton.icon(
+                      onPressed: () async {
+                        await machineProvider.seedDefaultMachines();
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Machines collection restored successfully.')),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.restore),
+                      label: const Text('Seed Default Machines'),
+                    ),
+                  ],
+                ],
+              ),
             );
           }
 

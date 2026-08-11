@@ -524,7 +524,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                       ),
                       title: const Text('Assigned Staff'),
                       subtitle: Text(
-                        'ID: ${order.assignedTo!.substring(0, 8)}',
+                        'ID: ${_formatId(order.assignedTo)}',
                       ),
                     ),
                   ),
@@ -535,6 +535,11 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
         },
       ),
     );
+  }
+
+  String _formatId(String? id) {
+    if (id == null || id.isEmpty) return 'N/A';
+    return id.length > 8 ? id.substring(0, 8) : id;
   }
 
   Widget _buildMachineRow({

@@ -62,7 +62,7 @@ class OrderLoadModel {
     required this.serviceType,
     this.washerId,
     this.dryerId,
-    this.status = LaundryStatus.paymentVerified,
+    this.status = LaundryStatus.pending,
     this.washCycleStart,
     this.washEstimatedFinish,
     this.dryCycleStart,

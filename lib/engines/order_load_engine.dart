@@ -110,6 +110,7 @@ class OrderLoadEngine {
         loadNumber: ids.length,
         weight: weight,
         serviceType: serviceType ?? 'Wash and Dry',
+        status: LaundryStatus.paymentVerified,
       );
       batch.set(firestore.collection('orderLoads').doc(loadId), load.toMap());
     }

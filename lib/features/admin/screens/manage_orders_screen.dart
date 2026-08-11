@@ -21,7 +21,7 @@ class ManageOrdersScreen extends StatelessWidget {
       appBar: AppBar(title: const Text('Manage Orders')),
       body: StreamBuilder(
         stream: context.read<OrderProvider>().streamAllOrders(),
-        builder: (context, snapshot) {
+        builder: (screenContext, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
@@ -44,7 +44,7 @@ class ManageOrdersScreen extends StatelessWidget {
           return ListView.builder(
             padding: const EdgeInsets.all(8),
             itemCount: orders.length,
-            itemBuilder: (context, index) {
+            itemBuilder: (itemContext, index) {
               final order = orders[index];
               final distance = order.distanceKm ?? 0.0;
               return Card(
@@ -78,9 +78,9 @@ class ManageOrdersScreen extends StatelessWidget {
                             'Payment: ${order.paymentMethod} - ${order.paymentStatus}',
                           ),
                           Text('Distance: ${distance.toStringAsFixed(1)} km'),
-                          // Single "Approve & Assign Staff" action.
-                          // Only shown before approval and skips rejected orders.
-                          if (order.approvedAt == null &&
+                          // Unified staff assignment action.
+                          // Shown if no staff is assigned yet and skips rejected orders.
+                          if (!_isStaffAssigned(order) &&
                               order.paymentStatus != 'Rejected')
                             Padding(
                               padding: const EdgeInsets.only(top: 12),
@@ -93,16 +93,18 @@ class ManageOrdersScreen extends StatelessWidget {
                                         color: Colors.white,
                                         size: 18,
                                       ),
-                                      label: const Text(
-                                        'Approve & Assign Staff',
-                                        style: TextStyle(color: Colors.white),
+                                      label: Text(
+                                        order.approvedAt == null
+                                            ? 'Approve & Assign Staff'
+                                            : 'Assign Staff',
+                                        style: const TextStyle(color: Colors.white),
                                       ),
                                       style: ElevatedButton.styleFrom(
                                         backgroundColor: AppColors.success,
                                       ),
                                       onPressed: () =>
                                           _showApproveAndAssignDialog(
-                                            context,
+                                            screenContext,
                                             order,
                                           ),
                                     ),
@@ -110,9 +112,9 @@ class ManageOrdersScreen extends StatelessWidget {
                                 ],
                               ),
                             ),
-                          if (order.assignedTo != null)
+                          if (_isStaffAssigned(order))
                             Text(
-                              'Assigned to: ${order.assignedTo!.substring(0, 8)}',
+                              'Assigned to: ${_formatId(order.assignedTo ?? order.staffId)}',
                             ),
                         ],
                       ),
@@ -132,14 +134,14 @@ class ManageOrdersScreen extends StatelessWidget {
   /// Fetches the available laundry staff, computes their current workload,
   /// recommends the least-loaded staff member, lets the admin select (or
   /// override) a staff member, then confirms before approving + assigning.
-  void _showApproveAndAssignDialog(BuildContext context, OrderModel order) {
+  void _showApproveAndAssignDialog(BuildContext screenContext, OrderModel order) {
     final searchController = TextEditingController();
-    final adminId = context.read<AuthProvider>().user?.id ?? '';
+    final adminId = screenContext.read<AuthProvider>().user?.id ?? '';
 
     showDialog(
-      context: context,
+      context: screenContext,
       builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) {
+        builder: (sContext, setDialogState) {
           return AlertDialog(
             title: const Text('Approve & Assign Staff'),
             content: SizedBox(
@@ -178,7 +180,7 @@ class ManageOrdersScreen extends StatelessWidget {
                       searchQuery: searchController.text,
                       onConfirm: (staffUser) {
                         Navigator.pop(dialogContext);
-                        _confirmAndApprove(context, order, adminId, staffUser);
+                        _confirmAndApprove(screenContext, order, adminId, staffUser);
                       },
                     ),
                   ),
@@ -274,20 +276,23 @@ class ManageOrdersScreen extends StatelessWidget {
             ),
             ElevatedButton(
               onPressed: () async {
+                final orderProvider = context.read<OrderProvider>();
                 Navigator.pop(dialogContext);
-                final success = await context
-                    .read<OrderProvider>()
-                    .approveAndAssignStaff(
-                      orderId: order.id,
-                      adminId: adminId,
-                      staffId: staff.id,
-                    );
-                if (context.mounted && success) {
+
+                final success = await orderProvider.approveAndAssignStaff(
+                  orderId: order.id,
+                  adminId: adminId,
+                  staffId: staff.id,
+                );
+
+                if (!context.mounted) return;
+
+                if (success) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Row(
                         children: [
-                          Icon(Icons.check_circle, color: Colors.white),
+                          const Icon(Icons.check_circle, color: Colors.white),
                           const SizedBox(width: 8),
                           Text('Order approved & assigned to ${staff.name}!'),
                         ],
@@ -296,7 +301,7 @@ class ManageOrdersScreen extends StatelessWidget {
                       duration: const Duration(seconds: 3),
                     ),
                   );
-                } else if (context.mounted) {
+                } else {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                       content: Text(
@@ -359,6 +364,15 @@ class ManageOrdersScreen extends StatelessWidget {
       default:
         return Colors.grey;
     }
+  }
+
+  bool _isStaffAssigned(OrderModel order) {
+    return order.assignedTo != null || order.staffId != null;
+  }
+
+  String _formatId(String? id) {
+    if (id == null || id.isEmpty) return 'N/A';
+    return id.length > 8 ? id.substring(0, 8) : id;
   }
 }
 

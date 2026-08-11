@@ -6,6 +6,8 @@ import '../models/payment_model.dart';
 import '../services/storage_service.dart';
 import '../engines/service_time_estimator.dart';
 import '../engines/order_status_flow_engine.dart';
+import '../engines/order_load_engine.dart';
+import '../models/order_model.dart';
 
 class PaymentProvider extends ChangeNotifier {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -168,36 +170,38 @@ class PaymentProvider extends ChangeNotifier {
           cycles = 1;
         }
 
-        // 38 MINS PER CYCLE: estimatedDuration = cycles × 38
+        // 38 MINS PER CYCLE
         final estimatedDuration = ServiceTimeEstimator.estimateMinutesForCycles(
           cycles,
         );
-        final estimatedFinish = now.add(Duration(minutes: estimatedDuration));
 
-        // Update payment document
+        // Update payment document (NOTE: estimatedFinishTime removed)
         await _firestore.collection('payments').doc(paymentId).update({
           'status': 'Verified',
           'verifiedBy': adminId,
           'verifiedAt': now.toIso8601String(),
           'approvedAt': now.toIso8601String(),
           'estimatedDuration': estimatedDuration,
-          'estimatedFinishTime': estimatedFinish.toIso8601String(),
         });
 
-        // Update the associated order: start laundry only on approval
+        // Update the associated order
         if (orderId != null) {
-          // NOTE: Machine assignment intentionally does NOT happen when a
-          // payment is verified. The order moves to 'Payment Verified' and a
-          // machine is assigned ONLY when staff clicks "Start Washing" /
-          // "Start Drying" on the laundry task screen.
-          await _firestore.collection('orders').doc(orderId).update({
-            'paymentStatus': 'Verified',
-            'status': OrderStatusFlowEngine.statusPaymentVerified,
-            'approvedAt': now.toIso8601String(),
-            'estimatedDuration': estimatedDuration,
-            'estimatedFinishTime': estimatedFinish.toIso8601String(),
-            'updatedAt': now.toIso8601String(),
-          });
+          final orderDoc = await _firestore.collection('orders').doc(orderId).get();
+          final orderData = orderDoc.data();
+          if (orderData != null) {
+             final orderObj = OrderModel.fromMap(orderData, orderId);
+             // 1. Create loads first
+             await OrderLoadEngine.createLoadsForOrder(_firestore, orderObj);
+             
+             // 2. Update status second (triggers scheduler)
+             await _firestore.collection('orders').doc(orderId).update({
+               'paymentStatus': 'Verified',
+               'status': OrderStatusFlowEngine.statusPaymentVerified,
+               'approvedAt': now.toIso8601String(),
+               'estimatedDuration': estimatedDuration,
+               'updatedAt': now.toIso8601String(),
+             });
+          }
         }
       } else {
         // Reject

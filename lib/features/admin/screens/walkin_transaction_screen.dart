@@ -129,7 +129,29 @@ class _WalkinTransactionScreenState extends State<WalkinTransactionScreen> {
         }
       });
 
-      await FirebaseFirestore.instance.collection('orders').doc(orderId).set({
+      final orderRef = FirebaseFirestore.instance.collection('orders').doc(orderId);
+      final String initialStatus = _paymentMethod == 'Cash'
+          ? OrderStatusFlowEngine.statusPaymentVerified
+          : OrderStatusFlowEngine.statusPaymentPendingVerification;
+
+      // 1. Create the load records FIRST (8kg per load) using the unified engine.
+      // This ensures loads are visible when the scheduler triggers from the order status.
+      if (_paymentMethod == 'Cash') {
+        final orderObj = OrderModel.fromMap({
+          'id': orderId,
+          'userId': 'walkin_${orderId.substring(0, 6)}',
+          'serviceType': _selectedService!.name,
+          'weight': weight,
+          'deliveryMethod': 'Pickup',
+        }, orderId);
+        await OrderLoadEngine.createLoadsForOrder(
+          FirebaseFirestore.instance,
+          orderObj,
+        );
+      }
+
+      // 2. Set order document SECOND (triggers automated scheduler).
+      await orderRef.set({
         'id': orderId,
         'userId': 'walkin_${orderId.substring(0, 6)}',
         'orderType': 'walk_in',
@@ -146,47 +168,15 @@ class _WalkinTransactionScreenState extends State<WalkinTransactionScreen> {
         'deliveryFee': 0,
         'totalAmount': total,
         'paymentMethod': _paymentMethod,
-        'paymentStatus': _paymentMethod == 'Cash'
-            ? 'Paid'
-            : 'Pending Verification',
-        // Machine assignment is NOT done here. Cash walk-in orders go to
-        // 'Payment Verified' so the scheduler can split the order into loads
-        // (8kg per load) and auto-assign the least-used available machine.
-        // GCash walk-in orders wait for admin payment verification.
-        'status': _paymentMethod == 'Cash'
-            ? OrderStatusFlowEngine.statusPaymentVerified
-            : OrderStatusFlowEngine.statusPaymentPendingVerification,
-        'approvedAt': _paymentMethod == 'Cash'
-            ? DateTime.now().toIso8601String()
-            : null,
+        'paymentStatus': _paymentMethod == 'Cash' ? 'Paid' : 'Pending Verification',
+        'status': initialStatus,
+        'approvedAt': _paymentMethod == 'Cash' ? DateTime.now().toIso8601String() : null,
         'isWalkIn': true,
         'notes': _notesController.text.trim(),
         'createdAt': DateTime.now().toIso8601String(),
         'updatedAt': DateTime.now().toIso8601String(),
+        'numberOfLoads': _paymentMethod == 'Cash' ? OrderLoadEngine.computeNumberOfLoads(weight) : null,
       });
-
-      // Create the load records for this walk-in order (8kg per load) using
-      // the SAME load engine as online orders, so walk-ins share the same
-      // scheduling system and machine queues.
-      if (_paymentMethod == 'Cash') {
-        final orderObj = OrderModel.fromMap({
-          'id': orderId,
-          'userId': 'walkin_${orderId.substring(0, 6)}',
-          'serviceType': _selectedService!.name,
-          'weight': weight,
-          'deliveryMethod': 'Pickup',
-        }, orderId);
-        final loadIds = await OrderLoadEngine.createLoadsForOrder(
-          FirebaseFirestore.instance,
-          orderObj,
-        );
-        if (loadIds.isNotEmpty) {
-          await FirebaseFirestore.instance
-              .collection('orders')
-              .doc(orderId)
-              .update({'numberOfLoads': loadIds.length});
-        }
-      }
 
       setState(() => _isLoading = false);
 

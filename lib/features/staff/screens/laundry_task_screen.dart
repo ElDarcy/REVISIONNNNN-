@@ -267,6 +267,42 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
 
     final buttons = <Widget>[];
 
+    // WAITING STATES (Informative placeholders)
+    if (status == OrderStatusFlowEngine.statusPaymentVerified ||
+        status == OrderStatusFlowEngine.statusWaitingForMachine ||
+        status == OrderStatusFlowEngine.statusWaitingForDryer) {
+      String label = "Waiting for System...";
+      if (status == OrderStatusFlowEngine.statusWaitingForMachine) label = "Waiting for Washer...";
+      if (status == OrderStatusFlowEngine.statusWaitingForDryer) label = "Waiting for Dryer...";
+      
+      buttons.add(
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.grey.shade100,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.grey.shade300),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.grey),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                label,
+                style: TextStyle(color: Colors.grey.shade600, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     // START WASHING (Machine Assigned + washer assigned)
     if (status == OrderStatusFlowEngine.statusMachineAssigned &&
         load.assignedWasherId != null) {

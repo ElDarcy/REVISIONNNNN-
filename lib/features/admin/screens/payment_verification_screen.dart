@@ -516,12 +516,19 @@ class PaymentVerificationScreen extends StatelessWidget {
           ),
           ElevatedButton(
             onPressed: () async {
+              final paymentProvider = context.read<PaymentProvider>();
+              final authProvider = context.read<AuthProvider>();
               Navigator.pop(context);
-              final adminId = context.read<AuthProvider>().user?.id ?? '';
-              final success = await context
-                  .read<PaymentProvider>()
-                  .verifyPayment(paymentId, adminId, approved: true);
-              if (context.mounted && success) {
+              
+              final adminId = authProvider.user?.id ?? '';
+              final success = await paymentProvider.verifyPayment(
+                paymentId, 
+                adminId, 
+                approved: true,
+              );
+              
+              if (!context.mounted) return;
+              if (success) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Row(
@@ -621,22 +628,29 @@ class PaymentVerificationScreen extends StatelessWidget {
             onPressed: () async {
               final reason = reasonController.text.trim();
               if (reason.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Please provide a reason for rejection'),
-                    backgroundColor: Colors.orange,
-                  ),
-                );
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Please provide a reason for rejection'),
+                      backgroundColor: Colors.orange,
+                    ),
+                  );
+                }
                 return;
               }
+              
+              final paymentProvider = context.read<PaymentProvider>();
+              final authProvider = context.read<AuthProvider>();
               Navigator.pop(context);
-              final adminId = context.read<AuthProvider>().user?.id ?? '';
-              await context.read<PaymentProvider>().verifyPayment(
+              
+              final adminId = authProvider.user?.id ?? '';
+              await paymentProvider.verifyPayment(
                 paymentId,
                 adminId,
                 approved: false,
                 rejectionReason: reason,
               );
+              
               if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(

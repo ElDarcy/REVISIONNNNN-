@@ -142,33 +142,28 @@ class OrderProvider extends ChangeNotifier {
       final estimatedDuration = ServiceTimeEstimator.estimateMinutesForCycles(
         cycles,
       );
-      final estimatedFinish = now.add(Duration(minutes: estimatedDuration));
 
-      // NOTE: Machine assignment intentionally does NOT happen at approval.
-      // The order moves to 'Payment Verified' and loads are created. Each
-      // load is then scheduled independently (see MachineProvider).
+      // 1. CREATE LOADS FIRST (per-load scheduling requirement).
+      // This ensures loads are visible before the scheduler is triggered.
+      final orderObj = OrderModel.fromMap(orderData, orderId);
+      final loadIds = await OrderLoadEngine.createLoadsForOrder(
+        _firestore,
+        orderObj,
+      );
+
+      // 2. UPDATE STATUS SECOND (triggers automated scheduler).
+      // NOTE: estimatedFinishTime is intentionally OMITTED here.
+      // The timer must only start when staff clicks "Start Washing" (StartMachineStep).
       await _firestore.collection('orders').doc(orderId).update({
         'status': OrderStatusFlowEngine.statusPaymentVerified,
         'paymentStatus': 'Verified',
         'approvedAt': now.toIso8601String(),
         'approvedBy': adminId,
         'estimatedDuration': estimatedDuration,
-        'estimatedFinishTime': estimatedFinish.toIso8601String(),
         'updatedAt': now.toIso8601String(),
+        if (loadIds.isNotEmpty) 'numberOfLoads': loadIds.length,
       });
 
-      // Create load records for this order (based on weight / 8kg per load).
-      final orderObj = OrderModel.fromMap(orderData, orderId);
-      final loadIds = await OrderLoadEngine.createLoadsForOrder(
-        _firestore,
-        orderObj,
-      );
-      if (loadIds.isNotEmpty) {
-        await _firestore.collection('orders').doc(orderId).update({
-          'numberOfLoads': loadIds.length,
-          'updatedAt': now.toIso8601String(),
-        });
-      }
       return true;
     } catch (e) {
       _error = 'Failed to approve order.';
@@ -205,14 +200,13 @@ class OrderProvider extends ChangeNotifier {
         }
         final orderData = doc.data()!;
 
-        // Prevent duplicate approval / multiple staff assignments.
-        final alreadyApproved = orderData['approvedAt'] != null;
+        // Prevent duplicate staff assignments.
         final hasAssignedStaff =
             orderData['assignedTo'] != null ||
             orderData['staffId'] != null ||
             orderData['assignedStaffId'] != null;
-        if (alreadyApproved || hasAssignedStaff) {
-          throw Exception('Order already approved or staff assigned');
+        if (hasAssignedStaff) {
+          throw Exception('Staff already assigned to this order');
         }
 
         // Determine cycles (same heuristic as approveOrder).
@@ -233,34 +227,25 @@ class OrderProvider extends ChangeNotifier {
         final estimatedDuration = ServiceTimeEstimator.estimateMinutesForCycles(
           cycles,
         );
-        final estimatedFinish = now.add(Duration(minutes: estimatedDuration));
 
         transaction.update(orderRef, {
-          'status': 'Approved',
+          'status': OrderStatusFlowEngine.statusPaymentVerified,
           'assignedStaffId': staffId,
           'assignedTo': staffId,
           'staffId': staffId,
-          'approvedAt': now.toIso8601String(),
-          'approvedBy': adminId,
-          'estimatedDuration': estimatedDuration,
-          'estimatedFinishTime': estimatedFinish.toIso8601String(),
+          // Only set approval info if not already present (e.g. from GCash verification).
+          // NOTE: estimatedFinishTime is OMITTED to prevent premature timer start.
+          'approvedAt': orderData['approvedAt'] ?? now.toIso8601String(),
+          'approvedBy': orderData['approvedBy'] ?? adminId,
+          'estimatedDuration': orderData['estimatedDuration'] ?? estimatedDuration,
           'updatedAt': now.toIso8601String(),
         });
       });
 
-      // Create load records for this order (idempotent).
+      // 3. Ensure load records are created (idempotent).
       final orderObj = await getOrderById(orderId);
       if (orderObj != null) {
-        final loadIds = await OrderLoadEngine.createLoadsForOrder(
-          _firestore,
-          orderObj,
-        );
-        if (loadIds.isNotEmpty) {
-          await _firestore.collection('orders').doc(orderId).update({
-            'numberOfLoads': loadIds.length,
-            'updatedAt': DateTime.now().toIso8601String(),
-          });
-        }
+        await OrderLoadEngine.createLoadsForOrder(_firestore, orderObj);
       }
       return true;
     } catch (e) {

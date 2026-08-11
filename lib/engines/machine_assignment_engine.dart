@@ -39,7 +39,11 @@ class MachineAssignmentEngine {
       // Secondary: oldest lastUsed first (machines idle the longest)
       final aLast = a.lastUsed ?? DateTime.fromMillisecondsSinceEpoch(0);
       final bLast = b.lastUsed ?? DateTime.fromMillisecondsSinceEpoch(0);
-      return aLast.compareTo(bLast);
+      final lastCompare = aLast.compareTo(bLast);
+      if (lastCompare != 0) return lastCompare;
+
+      // Tertiary: lowest machine number
+      return a.machineNumber.compareTo(b.machineNumber);
     });
 
     return available;
