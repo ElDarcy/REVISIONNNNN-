@@ -147,7 +147,7 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
     final grandTotal = serviceSubtotal + soapTotal;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('New Order')),
+      appBar: AppBar(title: const Text('New Laundry Transaction')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Form(
@@ -265,12 +265,31 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  soap.name,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w600,
-                                    fontSize: 14,
-                                  ),
+                                Row(
+                                  children: [
+                                    Text(
+                                      soap.name,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                    if (soap.isLowStock) ...[
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                                        decoration: BoxDecoration(
+                                          color: Colors.orange.shade50,
+                                          borderRadius: BorderRadius.circular(4),
+                                          border: Border.all(color: Colors.orange.shade200),
+                                        ),
+                                        child: Text(
+                                          'LOW STOCK',
+                                          style: TextStyle(fontSize: 8, fontWeight: FontWeight.w800, color: Colors.orange.shade900),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
                                 ),
                                 const SizedBox(height: 2),
                                 Text(
@@ -285,62 +304,79 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                             ),
                           ),
                           // Quantity selector
-                          Container(
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.grey.shade300),
-                              borderRadius: BorderRadius.circular(8),
+                          if (soap.isOutOfStock)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade100,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Text(
+                                'OUT OF STOCK',
+                                style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey),
+                              ),
+                            )
+                          else
+                            Container(
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.grey.shade300),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  InkWell(
+                                    onTap: qty > 0
+                                        ? () => setState(() {
+                                            _selectedSoaps[soap.id] = qty - 1;
+                                            if (_selectedSoaps[soap.id]! <= 0) {
+                                              _selectedSoaps.remove(soap.id);
+                                            }
+                                          })
+                                        : null,
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(8),
+                                      child: Icon(
+                                        Icons.remove,
+                                        size: 18,
+                                        color: qty > 0
+                                            ? AppColors.primary
+                                            : Colors.grey.shade300,
+                                      ),
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                    ),
+                                    child: Text(
+                                      '$qty',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                  ),
+                                  InkWell(
+                                    onTap: qty < soap.stockQuantity
+                                        ? () => setState(() {
+                                            _selectedSoaps[soap.id] = qty + 1;
+                                          })
+                                        : null,
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(8),
+                                      child: Icon(
+                                        Icons.add,
+                                        size: 18,
+                                        color: qty < soap.stockQuantity
+                                            ? AppColors.primary
+                                            : Colors.grey.shade300,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                InkWell(
-                                  onTap: qty > 0
-                                      ? () => setState(() {
-                                          _selectedSoaps[soap.id] = qty - 1;
-                                          if (_selectedSoaps[soap.id]! <= 0) {
-                                            _selectedSoaps.remove(soap.id);
-                                          }
-                                        })
-                                      : null,
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(8),
-                                    child: Icon(
-                                      Icons.remove,
-                                      size: 18,
-                                      color: qty > 0
-                                          ? AppColors.primary
-                                          : Colors.grey.shade300,
-                                    ),
-                                  ),
-                                ),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                  ),
-                                  child: Text(
-                                    '$qty',
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 14,
-                                    ),
-                                  ),
-                                ),
-                                InkWell(
-                                  onTap: () => setState(() {
-                                    _selectedSoaps[soap.id] = qty + 1;
-                                  }),
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(8),
-                                    child: Icon(
-                                      Icons.add,
-                                      size: 18,
-                                      color: AppColors.primary,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
                         ],
                       ),
                     ),

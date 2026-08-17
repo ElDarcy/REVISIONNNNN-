@@ -79,11 +79,29 @@ class _DeliveryDashboard extends StatelessWidget {
       stream: context.read<DeliveryProvider>().streamDeliveryQueue(),
       builder: (context, snapshot) {
         final entries = snapshot.data ?? [];
-        final pending = entries
-            .where((e) => e.status == 'Pending Delivery')
+        final currentStaffId = context.read<AuthProvider>().user?.id;
+        final myEntries = entries
+            .where(
+              (entry) =>
+                  currentStaffId != null && entry.assignedTo == currentStaffId,
+            )
+            .toList();
+        final pendingDelivery = myEntries
+            .where((e) => e.type == 'delivery' && e.status == 'Pending Delivery')
             .length;
-        final out = entries.where((e) => e.status == 'Out for Delivery').length;
-        final completed = entries.where((e) => e.status == 'Completed').length;
+        final pendingPickup = myEntries
+            .where((e) => e.type == 'pickup' && e.status == 'Pending Pickup')
+            .length;
+        final outTasks = myEntries
+            .where((e) =>
+                  (e.type == 'delivery' && (e.status == 'Out for Delivery' || e.status == 'Assigned')) ||
+                  (e.type == 'pickup' && (e.status == 'Pickup Assigned' || e.status == 'Laundry Collected')))
+            .length;
+        final completed = myEntries
+            .where((e) =>
+                  (e.type == 'delivery' && e.status == 'Completed') ||
+                  (e.type == 'pickup' && e.status == 'Laundry Collected'))
+            .length;
 
         return Padding(
           padding: const EdgeInsets.all(16),
@@ -94,16 +112,16 @@ class _DeliveryDashboard extends StatelessWidget {
                 children: [
                   Expanded(
                     child: _statCard(
-                      'Pending Delivery',
-                      pending.toString(),
+                      'Pending Tasks',
+                      (pendingDelivery + pendingPickup).toString(),
                       AppColors.warning,
                     ),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: _statCard(
-                      'Out for Delivery',
-                      out.toString(),
+                      'Ongoing',
+                      outTasks.toString(),
                       AppColors.processingColor,
                     ),
                   ),
@@ -129,7 +147,7 @@ class _DeliveryDashboard extends StatelessWidget {
                     child: Icon(Icons.local_shipping),
                   ),
                   title: const Text('Delivery Tasks'),
-                  subtitle: Text('$pending deliveries ready'),
+                  subtitle: Text('${pendingDelivery + pendingPickup} tasks pending'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(

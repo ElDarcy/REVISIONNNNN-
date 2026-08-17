@@ -135,7 +135,11 @@ class DeliveryProvider extends ChangeNotifier {
     }
   }
 
-  /// Start a delivery: set status to 'Out for Delivery' and update the order.
+  /// Start a delivery without changing the laundry-processing status.
+  ///
+  /// `orders.status` drives the customer laundry progress. Delivery is a
+  /// separate fulfilment concern, so writing `Out for Delivery` there makes a
+  /// completed laundry look like it has left its progress flow.
   Future<bool> startDelivery(String orderId, String staffId) async {
     try {
       final now = Timestamp.now();
@@ -145,7 +149,9 @@ class DeliveryProvider extends ChangeNotifier {
         'startedAt': now,
       });
       await _firestore.collection('orders').doc(orderId).update({
-        'status': 'Out for Delivery',
+        'deliveryStatus': 'Out for Delivery',
+        'assignedDeliveryStaffId': staffId,
+        'deliveryStartedAt': now,
         'updatedAt': now,
       });
       return true;
@@ -156,7 +162,7 @@ class DeliveryProvider extends ChangeNotifier {
     }
   }
 
-  /// Complete a delivery: set status to 'Completed' and update the order.
+  /// Complete a delivery without changing the completed laundry status.
   Future<bool> completeDelivery(String orderId) async {
     try {
       final now = Timestamp.now();
@@ -165,8 +171,8 @@ class DeliveryProvider extends ChangeNotifier {
         'completedAt': now,
       });
       await _firestore.collection('orders').doc(orderId).update({
-        'status': 'Completed',
-        'completedAt': now,
+        'deliveryStatus': 'Delivered',
+        'deliveredAt': now,
         'updatedAt': now,
       });
       return true;

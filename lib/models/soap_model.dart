@@ -33,6 +33,18 @@ class SoapModel {
 
   bool get isInStock => stockStatus == 'In Stock' && stockQuantity > 0;
 
+  static const int lowStockThreshold = 10;
+
+  bool get isLowStock => stockQuantity > 0 && stockQuantity <= lowStockThreshold;
+
+  bool get isOutOfStock => stockQuantity <= 0;
+
+  String get inventoryStatus {
+    if (isOutOfStock) return 'Out of Stock';
+    if (isLowStock) return 'Low Stock';
+    return 'Normal';
+  }
+
   Map<String, dynamic> toMap() {
     return {
       'id': id,

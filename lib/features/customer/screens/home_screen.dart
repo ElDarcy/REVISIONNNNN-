@@ -72,9 +72,9 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
             const SizedBox(height: 12),
             _buildServicesGrid(services, isServicesLoading: isServicesLoading),
             const SizedBox(height: 24),
-            // Active Orders
+            // Active Laundry Transactions
             const Text(
-              'Active Orders',
+              'Active Laundry Transactions',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
@@ -88,7 +88,7 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
           BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
           BottomNavigationBarItem(
             icon: Icon(Icons.receipt_long),
-            label: 'Orders',
+            label: 'Transactions',
           ),
           BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Profile'),
         ],
@@ -199,7 +199,8 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
         Expanded(
           child: _buildActionCard(
             icon: Icons.add_circle_outline,
-            label: 'New Order',
+            label: 'New Transaction',
+            description: 'Create a new laundry order quickly',
             color: AppColors.primary,
             onTap: () => Navigator.pushNamed(context, '/customer/create-order'),
           ),
@@ -208,7 +209,8 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
         Expanded(
           child: _buildActionCard(
             icon: Icons.track_changes,
-            label: 'Track Order',
+            label: 'Track Laundry Transaction',
+            description: 'See the current status of your order',
             color: AppColors.success,
             onTap: () =>
                 Navigator.pushNamed(context, '/customer/order-history'),
@@ -221,20 +223,69 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
   Widget _buildActionCard({
     required IconData icon,
     required String label,
+    required String description,
     required Color color,
     required VoidCallback onTap,
   }) {
     return Card(
+      elevation: 1,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+      ),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(14),
         child: Padding(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 14),
           child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(icon, size: 40, color: color),
-              const SizedBox(height: 8),
-              Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, size: 28, color: color),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                description,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Continue',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: color,
+                    ),
+                  ),
+                  Icon(
+                    Icons.arrow_forward,
+                    size: 18,
+                    color: color,
+                  ),
+                ],
+              ),
             ],
           ),
         ),
@@ -278,59 +329,88 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
             ),
           )
         else
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              childAspectRatio: 1.3,
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 12,
-            ),
-            itemCount: displayServices.length,
-            itemBuilder: (context, index) {
-              final service = services[index];
-              return Card(
-                child: InkWell(
-                  onTap: () =>
-                      Navigator.pushNamed(context, '/customer/create-order'),
-                  borderRadius: BorderRadius.circular(12),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          getServiceIcon(service.name),
-                          size: 32,
-                          color: AppColors.primary,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          service.name,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '₱${service.pricePerKg.toStringAsFixed(0)}/cycle',
-                          style: TextStyle(
-                            color: AppColors.success,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          'Max ${service.maxKgPerCycle.toStringAsFixed(0)}kg/cycle',
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: Colors.grey,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final crossAxisCount = 3;
+              final spacing = 12.0;
+              final totalSpacing = spacing * (crossAxisCount - 1);
+              final itemWidth = (constraints.maxWidth - totalSpacing) / crossAxisCount;
+              final itemHeight = itemWidth * 1.35; // Increased from 1.05 to prevent overflow
+
+              return GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: crossAxisCount,
+                  childAspectRatio: itemWidth / itemHeight,
+                  crossAxisSpacing: spacing,
+                  mainAxisSpacing: spacing,
                 ),
+                itemCount: displayServices.length,
+                itemBuilder: (context, index) {
+                  final service = services[index];
+                  return Card(
+                    elevation: 1,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: InkWell(
+                      onTap: () =>
+                          Navigator.pushNamed(context, '/customer/create-order'),
+                      borderRadius: BorderRadius.circular(14),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 16,
+                          horizontal: 12,
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: AppColors.primary.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Icon(
+                                getServiceIcon(service.name),
+                                size: 28,
+                                color: AppColors.primary,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              service.name,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              '₱${service.pricePerKg.toStringAsFixed(0)}/cycle',
+                              style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: AppColors.success,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Max ${service.maxKgPerCycle.toStringAsFixed(0)}kg/cycle',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
               );
             },
           ),
@@ -360,7 +440,7 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
               padding: EdgeInsets.all(24),
               child: Center(
                 child: Text(
-                  'Unable to load your orders. Please check your connection.',
+                  'Unable to load your laundry transactions. Please check your connection.',
                   style: TextStyle(color: Colors.grey),
                 ),
               ),
@@ -378,7 +458,7 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
                 Icon(Icons.receipt_long, size: 64, color: Colors.grey),
                 SizedBox(height: 16),
                 Text(
-                  'No Orders Yet',
+                  'No Laundry Transactions Yet',
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w600,
@@ -387,7 +467,7 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
                 ),
                 SizedBox(height: 8),
                 Text(
-                  "You haven't placed any orders yet.\nOnce you do, they'll appear here.",
+                  "You haven't placed any laundry transactions yet.\nOnce you do, they'll appear here.",
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 14, color: Colors.grey),
                 ),
@@ -404,7 +484,7 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
               padding: EdgeInsets.all(24),
               child: Center(
                 child: Text(
-                  'No active orders',
+                  'No active laundry transactions',
                   style: TextStyle(color: Colors.grey),
                 ),
               ),
@@ -423,7 +503,7 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
                     color: AppColors.primary,
                   ),
                 ),
-                title: Text('Order #${order.id.substring(0, 6).toUpperCase()}'),
+                title: Text('Transaction #${order.id.substring(0, 6).toUpperCase()}'),
                 subtitle: Text('Status: ${order.status.value}'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => Navigator.pushNamed(

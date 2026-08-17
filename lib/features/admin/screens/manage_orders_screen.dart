@@ -11,6 +11,7 @@ import '../../../models/order_model.dart';
 import '../../../models/user_model.dart';
 import '../../../engines/order_status_flow_engine.dart';
 import '../../../engines/staff_assignment_engine.dart';
+import '../../../services/transaction_proof_service.dart';
 
 class ManageOrdersScreen extends StatelessWidget {
   const ManageOrdersScreen({super.key});
@@ -78,6 +79,21 @@ class ManageOrdersScreen extends StatelessWidget {
                             'Payment: ${order.paymentMethod} - ${order.paymentStatus}',
                           ),
                           Text('Distance: ${distance.toStringAsFixed(1)} km'),
+                          if (order.weightStatus == 'submitted')
+                            Padding(
+                              padding: const EdgeInsets.only(top: 12),
+                              child: SizedBox(
+                                width: double.infinity,
+                                child: OutlinedButton.icon(
+                                  icon: const Icon(Icons.monitor_weight_outlined),
+                                  label: const Text('Review Weight Verification'),
+                                  onPressed: () => _showWeightReview(
+                                    screenContext,
+                                    order,
+                                  ),
+                                ),
+                              ),
+                            ),
                           // Unified staff assignment action.
                           // Shown if no staff is assigned yet and skips rejected orders.
                           if (!_isStaffAssigned(order) &&
@@ -127,6 +143,118 @@ class ManageOrdersScreen extends StatelessWidget {
         },
       ),
     );
+  }
+
+  Future<void> _showWeightReview(
+    BuildContext context,
+    OrderModel order,
+  ) async {
+    final noteController = TextEditingController();
+    final adminId = context.read<AuthProvider>().user?.id ?? '';
+    final proofId = order.weightProofId;
+    final proof = proofId == null
+        ? Future.value(null)
+        : TransactionProofService().loadImageBytes(
+            proofId: proofId,
+            orderId: order.id,
+          );
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Review Weight Verification'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Declared: ${order.displayedEstimatedWeight.toStringAsFixed(2)} kg'),
+              Text('Measured: ${order.actualWeight?.toStringAsFixed(2) ?? 'N/A'} kg'),
+              const SizedBox(height: 12),
+              FutureBuilder(
+                future: proof,
+                builder: (_, snapshot) {
+                  final bytes = snapshot.data;
+                  if (bytes == null) {
+                    return const Text('Scale proof is unavailable.');
+                  }
+                  return ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.memory(bytes),
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: noteController,
+                maxLines: 2,
+                decoration: const InputDecoration(
+                  labelText: 'Review note (optional)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          OutlinedButton(
+            onPressed: () => _reviewWeight(
+              context,
+              dialogContext,
+              order.id,
+              adminId,
+              false,
+              noteController.text,
+            ),
+            child: const Text('Reject'),
+          ),
+          ElevatedButton(
+            onPressed: () => _reviewWeight(
+              context,
+              dialogContext,
+              order.id,
+              adminId,
+              true,
+              noteController.text,
+            ),
+            child: const Text('Approve'),
+          ),
+        ],
+      ),
+    );
+    noteController.dispose();
+  }
+
+  Future<void> _reviewWeight(
+    BuildContext context,
+    BuildContext dialogContext,
+    String orderId,
+    String adminId,
+    bool approved,
+    String note,
+  ) async {
+    final success = await context.read<OrderProvider>().verifyWeightVerification(
+          orderId: orderId,
+          adminId: adminId,
+          approved: approved,
+          note: note,
+        );
+    if (!dialogContext.mounted) return;
+    Navigator.pop(dialogContext);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success
+              ? 'Weight ${approved ? 'approved' : 'rejected'}.'
+              : 'Could not review the weight verification.'),
+          backgroundColor: success ? Colors.green : Colors.red,
+        ),
+      );
+    }
   }
 
   /// Opens the combined "Approve & Assign Staff" flow.

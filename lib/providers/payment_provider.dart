@@ -6,8 +6,7 @@ import '../models/payment_model.dart';
 import '../services/storage_service.dart';
 import '../engines/service_time_estimator.dart';
 import '../engines/order_status_flow_engine.dart';
-import '../engines/order_load_engine.dart';
-import '../models/order_model.dart';
+import '../engines/order_scheduling_gate.dart';
 
 class PaymentProvider extends ChangeNotifier {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -67,6 +66,7 @@ class PaymentProvider extends ChangeNotifier {
     required double amount,
     required String referenceNumber,
     required String receiptImagePath,
+    String paymentType = 'laundry',
   }) async {
     _isLoading = true;
     _error = null;
@@ -86,19 +86,26 @@ class PaymentProvider extends ChangeNotifier {
         userId: userId,
         amount: amount,
         method: 'GCash',
+        paymentType: paymentType,
         referenceNumber: referenceNumber,
         receiptImageUrl: receiptUrl,
       );
 
-      await _firestore
-          .collection('payments')
-          .doc(paymentId)
-          .set(payment.toMap());
-      await _firestore.collection('orders').doc(orderId).update({
-        'paymentStatus': 'Pending Verification',
-        'status': 'Payment Pending Verification',
-        'updatedAt': DateTime.now().toIso8601String(),
-      });
+      final batch = _firestore.batch();
+      batch.set(_firestore.collection('payments').doc(paymentId), payment.toMap());
+      if (paymentType == 'laundry') {
+        batch.update(_firestore.collection('orders').doc(orderId), {
+          'paymentStatus': 'Pending Verification',
+          'status': 'Payment Pending Verification',
+          'updatedAt': DateTime.now().toIso8601String(),
+        });
+      } else {
+        batch.update(_firestore.collection('orders').doc(orderId), {
+          'deliveryFeePaymentStatus': 'Pending Verification',
+          'updatedAt': DateTime.now().toIso8601String(),
+        });
+      }
+      await batch.commit();
 
       _isLoading = false;
       notifyListeners();
@@ -135,6 +142,23 @@ class PaymentProvider extends ChangeNotifier {
             .doc(paymentId)
             .get();
         final orderId = paymentDoc.data()?['orderId'] as String?;
+
+        final paymentType = paymentDoc.data()?['paymentType'] as String? ??
+            'laundry';
+        if (orderId == null) throw StateError('Payment has no order.');
+
+        if (paymentType != 'laundry') {
+          await _firestore.collection('payments').doc(paymentId).update({
+            'status': 'Verified',
+            'verifiedBy': adminId,
+            'verifiedAt': now.toIso8601String(),
+          });
+          await _firestore.collection('orders').doc(orderId).update({
+            'deliveryFeePaymentStatus': 'Verified',
+            'updatedAt': now.toIso8601String(),
+          });
+          return true;
+        }
 
         // Determine cycles from the order:
         // 1. explicit 'cycles' field (walk-in orders)
@@ -185,24 +209,15 @@ class PaymentProvider extends ChangeNotifier {
         });
 
         // Update the associated order
-        if (orderId != null) {
-          final orderDoc = await _firestore.collection('orders').doc(orderId).get();
-          final orderData = orderDoc.data();
-          if (orderData != null) {
-             final orderObj = OrderModel.fromMap(orderData, orderId);
-             // 1. Create loads first
-             await OrderLoadEngine.createLoadsForOrder(_firestore, orderObj);
-             
-             // 2. Update status second (triggers scheduler)
-             await _firestore.collection('orders').doc(orderId).update({
-               'paymentStatus': 'Verified',
-               'status': OrderStatusFlowEngine.statusPaymentVerified,
-               'approvedAt': now.toIso8601String(),
-               'estimatedDuration': estimatedDuration,
-               'updatedAt': now.toIso8601String(),
-             });
-          }
-        }
+        await _firestore.collection('orders').doc(orderId).update({
+          'paymentStatus': 'Verified',
+          'status': OrderStatusFlowEngine.statusPaymentVerified,
+          'approvedAt': now.toIso8601String(),
+          'estimatedDuration': estimatedDuration,
+          'updatedAt': now.toIso8601String(),
+        });
+        // Weight approval is the only path that may create production loads.
+        await OrderSchedulingGate.releaseIfEligible(_firestore, orderId);
       } else {
         // Reject
         await _firestore.collection('payments').doc(paymentId).update({
@@ -216,11 +231,16 @@ class PaymentProvider extends ChangeNotifier {
             .collection('payments')
             .doc(paymentId)
             .get();
-        final orderId = paymentDoc.data()?['orderId'] as String?;
+        final paymentData = paymentDoc.data();
+        final orderId = paymentData?['orderId'] as String?;
+        final paymentType = paymentData?['paymentType'] as String? ??
+            'laundry';
 
         if (orderId != null) {
           await _firestore.collection('orders').doc(orderId).update({
-            'paymentStatus': 'Rejected',
+            paymentType == 'laundry'
+                ? 'paymentStatus'
+                : 'deliveryFeePaymentStatus': 'Rejected',
             'rejectionReason': rejectionReason ?? 'No reason provided',
             'updatedAt': now.toIso8601String(),
           });

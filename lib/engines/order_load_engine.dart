@@ -33,13 +33,20 @@ class OrderLoadEngine {
   static List<double> splitWeight(double totalWeight) {
     if (totalWeight <= 0) return [];
     final count = computeNumberOfLoads(totalWeight);
-    final loads = <double>[];
-    for (var i = 0; i < count; i++) {
-      final remaining = totalWeight - i * capacityKg;
-      loads.add(remaining >= capacityKg ? capacityKg : remaining);
-    }
-    return loads;
+    // Balance loads so a 10 kg order is two 5 kg loads rather than 8 kg + 2 kg.
+    // The final load receives the residual to preserve the exact total.
+    final perLoad = (totalWeight / count * 1000).round() / 1000;
+    return List<double>.generate(
+      count,
+      (index) => index == count - 1
+          ? ((totalWeight - perLoad * (count - 1)) * 1000).round() / 1000
+          : perLoad,
+    );
   }
+
+  /// Uses actual weight only after it has been explicitly approved.
+  static double effectiveWeightForOrder(OrderModel order) =>
+      order.operationalWeight;
 
   /// Build the per-load status flow for a given service type.
   ///
@@ -97,7 +104,7 @@ class OrderLoadEngine {
     }
 
     final serviceType = serviceTypeOverride ?? order.serviceType;
-    final weights = splitWeight(order.weight);
+    final weights = splitWeight(effectiveWeightForOrder(order));
     final batch = firestore.batch();
     final ids = <String>[];
 

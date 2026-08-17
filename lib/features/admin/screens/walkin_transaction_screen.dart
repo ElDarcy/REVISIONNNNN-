@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:uuid/uuid.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/widgets/custom_button.dart';
 import '../../../core/widgets/custom_text_field.dart';
 import '../../../core/utils/currency_helper.dart';
@@ -9,10 +7,10 @@ import '../../../core/constants/app_colors.dart';
 import '../../../providers/service_provider.dart';
 import '../../../providers/soap_provider.dart';
 import '../../../providers/auth_provider.dart';
-import '../../../engines/order_status_flow_engine.dart';
-import '../../../engines/order_load_engine.dart';
+import '../../../providers/order_provider.dart';
 import '../../../models/service_model.dart';
-import '../../../models/order_model.dart';
+import '../../../models/order_item_model.dart';
+import '../../customer/screens/gcash_payment_screen.dart';
 
 class WalkinTransactionScreen extends StatefulWidget {
   const WalkinTransactionScreen({super.key});
@@ -28,10 +26,9 @@ class _WalkinTransactionScreenState extends State<WalkinTransactionScreen> {
   final _phoneController = TextEditingController();
   final _weightController = TextEditingController();
   final _notesController = TextEditingController();
-  final _uuid = const Uuid();
 
   ServiceModel? _selectedService;
-  String _paymentMethod = 'Cash';
+  String _paymentMethod = 'Cash at Shop';
   bool _isLoading = false;
   final Map<String, int> _selectedSoaps = {};
 
@@ -92,6 +89,12 @@ class _WalkinTransactionScreenState extends State<WalkinTransactionScreen> {
   }
 
   Future<void> _createTransaction() async {
+    if (!context.read<AuthProvider>().isAdmin) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Only administrators can create or print walk-in receipts.')),
+      );
+      return;
+    }
     if (!_formKey.currentState!.validate()) return;
     if (_selectedService == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -106,12 +109,12 @@ class _WalkinTransactionScreenState extends State<WalkinTransactionScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final user = context.read<AuthProvider>().user;
+      final authProvider = context.read<AuthProvider>();
+      final orderProvider = context.read<OrderProvider>();
+      final user = authProvider.user;
       final weight = double.parse(_weightController.text);
       final cycles = _getCycleCount(weight);
       final subtotal = cycles * _selectedService!.pricePerKg;
-      final total = subtotal + _soapTotal;
-      final orderId = _uuid.v4();
 
       // Build soap add-ons data
       final soapProvider = context.read<SoapProvider>();
@@ -129,65 +132,62 @@ class _WalkinTransactionScreenState extends State<WalkinTransactionScreen> {
         }
       });
 
-      final orderRef = FirebaseFirestore.instance.collection('orders').doc(orderId);
-      final String initialStatus = _paymentMethod == 'Cash'
-          ? OrderStatusFlowEngine.statusPaymentVerified
-          : OrderStatusFlowEngine.statusPaymentPendingVerification;
+      final items = [
+        OrderItemModel(
+          serviceId: _selectedService!.id,
+          serviceName: _selectedService!.name,
+          price: _selectedService!.pricePerKg,
+          quantity: cycles.toDouble(),
+          unit: 'cycle(s)',
+        ),
+      ];
 
-      // 1. Create the load records FIRST (8kg per load) using the unified engine.
-      // This ensures loads are visible when the scheduler triggers from the order status.
-      if (_paymentMethod == 'Cash') {
-        final orderObj = OrderModel.fromMap({
-          'id': orderId,
-          'userId': 'walkin_${orderId.substring(0, 6)}',
-          'serviceType': _selectedService!.name,
-          'weight': weight,
-          'deliveryMethod': 'Pickup',
-        }, orderId);
-        await OrderLoadEngine.createLoadsForOrder(
-          FirebaseFirestore.instance,
-          orderObj,
-        );
-      }
-
-      // 2. Set order document SECOND (triggers automated scheduler).
-      await orderRef.set({
-        'id': orderId,
-        'userId': 'walkin_${orderId.substring(0, 6)}',
-        'orderType': 'walk_in',
-        'createdBy': user?.id ?? '',
-        'customerName': _nameController.text.trim(),
-        'customerPhone': _phoneController.text.trim(),
-        'serviceType': _selectedService!.name,
-        'pricePerKg': _selectedService!.pricePerKg,
-        'weight': weight,
-        'cycles': cycles,
-        'subtotal': subtotal,
-        'soapTotal': _soapTotal,
-        'selectedSoaps': selectedSoapData,
-        'deliveryFee': 0,
-        'totalAmount': total,
-        'paymentMethod': _paymentMethod,
-        'paymentStatus': _paymentMethod == 'Cash' ? 'Paid' : 'Pending Verification',
-        'status': initialStatus,
-        'approvedAt': _paymentMethod == 'Cash' ? DateTime.now().toIso8601String() : null,
-        'isWalkIn': true,
-        'notes': _notesController.text.trim(),
-        'createdAt': DateTime.now().toIso8601String(),
-        'updatedAt': DateTime.now().toIso8601String(),
-        'numberOfLoads': _paymentMethod == 'Cash' ? OrderLoadEngine.computeNumberOfLoads(weight) : null,
-      });
+      final orderId = await orderProvider.createOrder(
+        userId: user?.id ?? 'admin_walkin',
+        items: items,
+        weight: weight,
+        customerLat: 0,
+        customerLng: 0,
+        subtotal: subtotal,
+        soapTotal: _soapTotal,
+        selectedSoaps: selectedSoapData,
+        notes: _notesController.text.trim(),
+        deliveryMethod: 'Drop-off', // Walk-ins are always drop-off
+        orderType: 'walk_in',
+        customerName: _nameController.text.trim(),
+        customerPhone: _phoneController.text.trim(),
+        paymentMethodOverride: _paymentMethod,
+        paymentStatusOverride: _paymentMethod == 'Cash at Shop' ? 'Verified' : 'Pending Verification',
+      );
 
       setState(() => _isLoading = false);
 
-      if (mounted) {
+      if (mounted && orderId != null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Walk-in transaction created!'),
             backgroundColor: Colors.green,
           ),
         );
-        Navigator.pop(context);
+
+        if (_paymentMethod == 'GCash') {
+          final submitted = await Navigator.of(context).push<bool>(
+            MaterialPageRoute(
+              builder: (_) => GCashPaymentScreen(
+                orderId: orderId,
+                amount: subtotal + _soapTotal,
+                returnOnSuccess: true,
+              ),
+            ),
+          );
+          if (submitted != true || !mounted) return;
+        }
+
+        final createdOrder = await orderProvider.getOrderById(orderId);
+        if (createdOrder != null && mounted) {
+          await Navigator.pushNamed(context, '/receipt-preview', arguments: createdOrder);
+          if (mounted) Navigator.pop(context);
+        }
       }
     } catch (e) {
       setState(() => _isLoading = false);
@@ -201,6 +201,11 @@ class _WalkinTransactionScreenState extends State<WalkinTransactionScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (!context.read<AuthProvider>().isAdmin) {
+      return const Scaffold(
+        body: Center(child: Text('Administrator access is required.')),
+      );
+    }
     final serviceProvider = context.watch<ServiceProvider>();
     final soapProvider = context.watch<SoapProvider>();
     final services = serviceProvider.services;
@@ -367,12 +372,31 @@ class _WalkinTransactionScreenState extends State<WalkinTransactionScreen> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  soap.name,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w600,
-                                    fontSize: 14,
-                                  ),
+                                Row(
+                                  children: [
+                                    Text(
+                                      soap.name,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                    if (soap.isLowStock) ...[
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                                        decoration: BoxDecoration(
+                                          color: Colors.orange.shade50,
+                                          borderRadius: BorderRadius.circular(4),
+                                          border: Border.all(color: Colors.orange.shade200),
+                                        ),
+                                        child: Text(
+                                          'LOW STOCK',
+                                          style: TextStyle(fontSize: 8, fontWeight: FontWeight.w800, color: Colors.orange.shade900),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
                                 ),
                                 const SizedBox(height: 2),
                                 Text(
@@ -386,62 +410,79 @@ class _WalkinTransactionScreenState extends State<WalkinTransactionScreen> {
                               ],
                             ),
                           ),
-                          Container(
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.grey.shade300),
-                              borderRadius: BorderRadius.circular(8),
+                          if (soap.isOutOfStock)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade100,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Text(
+                                'OUT OF STOCK',
+                                style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey),
+                              ),
+                            )
+                          else
+                            Container(
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.grey.shade300),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  InkWell(
+                                    onTap: qty > 0
+                                        ? () => setState(() {
+                                            _selectedSoaps[soap.id] = qty - 1;
+                                            if (_selectedSoaps[soap.id]! <= 0) {
+                                              _selectedSoaps.remove(soap.id);
+                                            }
+                                          })
+                                        : null,
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(8),
+                                      child: Icon(
+                                        Icons.remove,
+                                        size: 18,
+                                        color: qty > 0
+                                            ? AppColors.primary
+                                            : Colors.grey.shade300,
+                                      ),
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                    ),
+                                    child: Text(
+                                      '$qty',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                  ),
+                                  InkWell(
+                                    onTap: qty < soap.stockQuantity
+                                        ? () => setState(() {
+                                            _selectedSoaps[soap.id] = qty + 1;
+                                          })
+                                        : null,
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(8),
+                                      child: Icon(
+                                        Icons.add,
+                                        size: 18,
+                                        color: qty < soap.stockQuantity
+                                            ? AppColors.primary
+                                            : Colors.grey.shade300,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                InkWell(
-                                  onTap: qty > 0
-                                      ? () => setState(() {
-                                          _selectedSoaps[soap.id] = qty - 1;
-                                          if (_selectedSoaps[soap.id]! <= 0) {
-                                            _selectedSoaps.remove(soap.id);
-                                          }
-                                        })
-                                      : null,
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(8),
-                                    child: Icon(
-                                      Icons.remove,
-                                      size: 18,
-                                      color: qty > 0
-                                          ? AppColors.primary
-                                          : Colors.grey.shade300,
-                                    ),
-                                  ),
-                                ),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                  ),
-                                  child: Text(
-                                    '$qty',
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 14,
-                                    ),
-                                  ),
-                                ),
-                                InkWell(
-                                  onTap: () => setState(() {
-                                    _selectedSoaps[soap.id] = qty + 1;
-                                  }),
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(8),
-                                    child: Icon(
-                                      Icons.add,
-                                      size: 18,
-                                      color: AppColors.primary,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
                         ],
                       ),
                     ),
@@ -456,6 +497,14 @@ class _WalkinTransactionScreenState extends State<WalkinTransactionScreen> {
                     padding: const EdgeInsets.all(16),
                     child: Column(
                       children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('Collection Method:'),
+                            const Text('Customer Drop-off'),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
@@ -558,8 +607,8 @@ class _WalkinTransactionScreenState extends State<WalkinTransactionScreen> {
                             value: _paymentMethod,
                             items: const [
                               DropdownMenuItem(
-                                value: 'Cash',
-                                child: Text('Cash'),
+                                value: 'Cash at Shop',
+                                child: Text('Cash at Shop'),
                               ),
                               DropdownMenuItem(
                                 value: 'GCash',
@@ -589,8 +638,8 @@ class _WalkinTransactionScreenState extends State<WalkinTransactionScreen> {
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
-                                _paymentMethod == 'Cash'
-                                    ? 'Cash payment is marked as Paid immediately.'
+                                _paymentMethod == 'Cash at Shop'
+                                    ? 'Cash (Upon Drop-off) is verified immediately.'
                                     : 'GCash payment will need admin verification.',
                                 style: const TextStyle(
                                   fontSize: 12,

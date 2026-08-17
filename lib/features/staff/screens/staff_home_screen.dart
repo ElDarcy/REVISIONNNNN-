@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../providers/auth_provider.dart';
@@ -118,9 +117,12 @@ class _LaundryTasksListBody extends StatelessWidget {
   Widget build(BuildContext context) {
     final orderProvider = context.read<OrderProvider>();
     final machineProvider = context.read<MachineProvider>();
+    final currentUser = context.watch<AuthProvider>().user;
+
+    if (currentUser == null) return const SizedBox.shrink();
 
     return StreamBuilder<List<OrderModel>>(
-      stream: orderProvider.streamAllOrders(),
+      stream: orderProvider.streamStaffOrders(currentUser.id),
       builder: (context, ordersSnap) {
         return StreamBuilder<List<OrderLoadModel>>(
           stream: orderProvider.streamAllLoads(),
@@ -130,13 +132,38 @@ class _LaundryTasksListBody extends StatelessWidget {
               return const Center(child: CircularProgressIndicator());
             }
 
-            final allOrders = ordersSnap.data ?? [];
+            final myOrders = ordersSnap.data ?? [];
             final allLoads = loadsSnap.data ?? [];
 
-            // Filter for loads that are not finished
-            final activeLoads = allLoads.where((l) => !l.status.isFinished).toList();
+            // Group all loads by orderId for easy lookup
+            final Map<String, List<OrderLoadModel>> groupedLoads = {};
+            for (final load in allLoads) {
+              groupedLoads.putIfAbsent(load.orderId, () => []).add(load);
+            }
 
-            if (activeLoads.isEmpty) {
+            final activeOrders = <OrderModel>[];
+            final completedOrders = <OrderModel>[];
+            for (final order in myOrders) {
+              final loads = groupedLoads[order.id] ?? const <OrderLoadModel>[];
+              final allLoadsFinished =
+                  loads.isNotEmpty && loads.every((load) => load.status.isFinished);
+              final readyForFulfilment = order.status == LaundryStatus.readyForPickup ||
+                  order.status == LaundryStatus.readyForDelivery ||
+                  order.status == LaundryStatus.outForDelivery ||
+                  order.status.isFinished;
+
+              // Ready is the hand-off to the customer/delivery workflow, not
+              // an active Laundry Staff task. A completed set of loads remains
+              // visible once, in history.
+              if (allLoadsFinished && readyForFulfilment) {
+                completedOrders.add(order);
+              } else if (!readyForFulfilment ||
+                  loads.any((load) => !load.status.isFinished)) {
+                activeOrders.add(order);
+              }
+            }
+
+            if (activeOrders.isEmpty && completedOrders.isEmpty) {
               return const Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -152,32 +179,37 @@ class _LaundryTasksListBody extends StatelessWidget {
               );
             }
 
-            // Group loads by orderId
-            final Map<String, List<OrderLoadModel>> groupedLoads = {};
-            for (final load in activeLoads) {
-              groupedLoads.putIfAbsent(load.orderId, () => []).add(load);
-            }
+            activeOrders.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+            completedOrders.sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-            // Get orders that have active loads
-            final ordersWithTasks = allOrders
-                .where((o) => groupedLoads.containsKey(o.id))
-                .toList()
-              ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-
-            return ListView.builder(
+            return ListView(
               padding: const EdgeInsets.all(12),
-              itemCount: ordersWithTasks.length,
-              itemBuilder: (context, index) {
-                final order = ordersWithTasks[index];
-                final loads = groupedLoads[order.id]!
-                  ..sort((a, b) => a.loadNumber.compareTo(b.loadNumber));
-
-                return _OrderGroupCard(
-                  order: order,
-                  loads: loads,
-                  machineProvider: machineProvider,
-                );
-              },
+              children: [
+                const Text('Active Tasks', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                if (activeOrders.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 16),
+                    child: Text('No active laundry tasks.'),
+                  ),
+                ...activeOrders.map((order) {
+                  final loads = (groupedLoads[order.id] ?? [])
+                      .where((load) => !load.status.isFinished)
+                      .toList()
+                    ..sort((a, b) => a.loadNumber.compareTo(b.loadNumber));
+                  return _OrderGroupCard(order: order, loads: loads, machineProvider: machineProvider);
+                }),
+                const SizedBox(height: 12),
+                const Text('Completed Tasks', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                if (completedOrders.isEmpty)
+                  const Text('No completed laundry tasks.'),
+                ...completedOrders.map((order) {
+                  final loads = List<OrderLoadModel>.from(groupedLoads[order.id] ?? [])
+                    ..sort((a, b) => a.loadNumber.compareTo(b.loadNumber));
+                  return _OrderGroupCard(order: order, loads: loads, machineProvider: machineProvider);
+                }),
+              ],
             );
           },
         );
@@ -196,6 +228,12 @@ class _OrderGroupCard extends StatelessWidget {
     required this.loads,
     required this.machineProvider,
   });
+
+  String _customerLabel() {
+    final name = order.customerName?.trim();
+    if (name != null && name.isNotEmpty) return name;
+    return order.orderType == 'online' ? 'Online Customer' : 'Walk-in Customer';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -222,14 +260,14 @@ class _OrderGroupCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Order #${order.id.substring(0, 6).toUpperCase()}',
+                        order.transactionNumber ?? 'Order #${order.id.substring(0, 6).toUpperCase()}',
                         style: const TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 16,
                         ),
                       ),
                       Text(
-                        'Customer: ${order.customerName ?? "Walk-in"}',
+                        'Customer: ${_customerLabel()}',
                         style: const TextStyle(fontSize: 14),
                       ),
                       Text(
@@ -246,12 +284,18 @@ class _OrderGroupCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     Text(
-                      '${order.weight}kg',
+                      '${order.operationalWeight}kg',
                       style: const TextStyle(
                         fontWeight: FontWeight.bold,
                         fontSize: 16,
                         color: AppColors.primary,
                       ),
+                    ),
+                    Text(
+                      order.hasVerifiedActualWeight
+                          ? 'Verified weight'
+                          : 'Declared weight',
+                      style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
                     ),
                     Text(
                       '${order.numberOfLoads ?? loads.length} Load(s)',
@@ -262,13 +306,33 @@ class _OrderGroupCard extends StatelessWidget {
               ],
             ),
           ),
+          if (order.weightStatus == 'pending' || order.weightStatus == 'rejected')
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () => Navigator.pushNamed(
+                    context,
+                    '/staff/weight-verification',
+                    arguments: {'orderId': order.id},
+                  ),
+                  icon: const Icon(Icons.monitor_weight_outlined),
+                  label: const Text('Verify Weight & Evidence'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.accent,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ),
+            ),
           const Divider(height: 0),
           // Individual Loads List
           ListView.separated(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             itemCount: loads.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
+            separatorBuilder: (_, _) => const Divider(height: 1),
             itemBuilder: (context, index) {
               final load = loads[index];
               return _LoadItemTile(
@@ -565,33 +629,38 @@ class _LaundryDashboardTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance.collection('orders').snapshots(),
+    final orderProvider = context.read<OrderProvider>();
+    final currentUser = context.watch<AuthProvider>().user;
+
+    if (currentUser == null) return const Center(child: CircularProgressIndicator());
+
+    return StreamBuilder<List<OrderModel>>(
+      stream: orderProvider.streamStaffOrders(currentUser.id),
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
 
-        final docs = snapshot.data!.docs;
-        final processing = docs.where((d) {
-          final status = d['status'] as String?;
-          return status == 'Payment Verified' ||
-              status == 'Waiting for Machine' ||
-              status == 'Machine Assigned' ||
-              status == 'Washing' ||
-              status == 'Waiting for Dryer' ||
-              status == 'Dryer Assigned' ||
-              status == 'Drying' ||
-              status == 'Folding';
-        }).length;
-        final ready = docs.where((d) {
-          final status = d['status'] as String?;
-          return status == 'Ready for Delivery' || status == 'Ready for Pickup';
-        }).length;
-        final completed = docs.where((d) {
-          final status = d['status'] as String?;
-          return status == 'Completed';
-        }).length;
+        final orders = snapshot.data!;
+        
+        final processing = orders.where((o) => 
+            !o.status.isFinished && 
+            !o.status.isDelivering && 
+            o.status != LaundryStatus.awaitingPickup &&
+            o.status != LaundryStatus.pickupAssigned &&
+            o.status != LaundryStatus.collected &&
+            o.status != LaundryStatus.inTransit
+        ).length;
+
+        final ready = orders.where((o) => 
+            o.status == LaundryStatus.readyForDelivery || 
+            o.status == LaundryStatus.readyForPickup
+        ).length;
+
+        final completed = orders.where((o) => 
+            o.status == LaundryStatus.completed || 
+            o.status == LaundryStatus.delivered
+        ).length;
 
         return Padding(
           padding: const EdgeInsets.all(16),
@@ -637,7 +706,7 @@ class _LaundryDashboardTab extends StatelessWidget {
                     child: Icon(Icons.local_laundry_service),
                   ),
                   title: const Text('Laundry Tasks'),
-                  subtitle: Text('$processing orders in progress'),
+                  subtitle: Text('$processing active tasks assigned to you'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(

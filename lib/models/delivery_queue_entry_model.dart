@@ -14,7 +14,8 @@ class DeliveryQueueEntry {
   final double longitude;
   final double distanceKm;
   final int priorityScore;
-  final String status; // Pending Delivery | Out for Delivery | Completed
+  final String status; // Pending Delivery | Out for Delivery | Completed | ...
+  final String type; // pickup | delivery
   final String? assignedTo;
   final DateTime? createdAt;
   final DateTime? startedAt;
@@ -30,6 +31,7 @@ class DeliveryQueueEntry {
     this.distanceKm = 0,
     this.priorityScore = 0,
     this.status = 'Pending Delivery',
+    this.type = 'delivery',
     this.assignedTo,
     this.createdAt,
     this.startedAt,
@@ -50,6 +52,7 @@ class DeliveryQueueEntry {
       'distanceKm': distanceKm,
       'priorityScore': priorityScore,
       'status': status,
+      'type': type,
       'assignedTo': assignedTo,
       'createdAt': createdAt == null ? null : Timestamp.fromDate(createdAt!),
       'startedAt': startedAt == null ? null : Timestamp.fromDate(startedAt!),
@@ -60,8 +63,17 @@ class DeliveryQueueEntry {
   }
 
   factory DeliveryQueueEntry.fromMap(Map<String, dynamic> map, String id) {
+    // Current queue documents use the order ID as their document ID. Some
+    // legacy records stored the order ID only in the document payload, so
+    // preserve that canonical task/order ID when it is available.
+    final rawOrderId =
+        map['orderId'] ?? map['deliveryRequestId'] ?? map['order_id'] ?? id;
+    final orderId = rawOrderId.toString().trim().isEmpty
+        ? id
+        : rawOrderId.toString();
+
     return DeliveryQueueEntry(
-      orderId: id,
+      orderId: orderId,
       customerId: map['customerId'],
       customerName: map['customerName'],
       address: map['address'],
@@ -70,6 +82,7 @@ class DeliveryQueueEntry {
       distanceKm: (map['distanceKm'] ?? 0).toDouble(),
       priorityScore: (map['priorityScore'] ?? 0).toInt(),
       status: map['status'] ?? 'Pending Delivery',
+      type: map['type'] ?? 'delivery',
       assignedTo: map['assignedTo'],
       createdAt: _parseDate(map['createdAt']),
       startedAt: _parseDate(map['startedAt']),

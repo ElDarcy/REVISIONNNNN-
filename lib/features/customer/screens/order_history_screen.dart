@@ -28,7 +28,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Order History')),
+      appBar: AppBar(title: const Text('Laundry Transaction History')),
       body: StreamBuilder<List<OrderModel>>(
         stream: _ordersStream,
         builder: (context, snapshot) {
@@ -49,7 +49,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen> {
                     Icon(Icons.error_outline, size: 48, color: Colors.grey),
                     SizedBox(height: 12),
                     Text(
-                      'Unable to load your orders. Please check your connection.',
+                      'Unable to load your laundry transactions. Please check your connection.',
                       textAlign: TextAlign.center,
                       style: TextStyle(fontSize: 15, color: Colors.grey),
                     ),
@@ -69,7 +69,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen> {
                   Icon(Icons.receipt_long, size: 64, color: Colors.grey),
                   SizedBox(height: 16),
                   Text(
-                    'No orders yet',
+                    'No laundry transactions yet',
                     style: TextStyle(fontSize: 18, color: Colors.grey),
                   ),
                 ],
@@ -95,7 +95,8 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen> {
                     ),
                   ),
                   title: Text(
-                    'Order #${order.id.substring(0, 6).toUpperCase()}',
+                    order.transactionNumber ?? 'Transaction #${order.id.substring(0, 6).toUpperCase()}',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                   subtitle: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,

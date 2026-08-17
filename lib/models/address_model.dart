@@ -37,5 +37,7 @@ class AddressModel {
     );
   }
 
-  String get fullAddress => '$street, $barangay, $city';
+  String get fullAddress => [street, barangay, city]
+      .where((part) => part.trim().isNotEmpty)
+      .join(', ');
 }

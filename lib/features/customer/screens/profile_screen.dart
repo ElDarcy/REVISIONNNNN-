@@ -60,6 +60,9 @@ class ProfileScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 32),
+            Card(child: ListTile(leading: const Icon(Icons.workspace_premium), title: const Text('Premium Membership'), subtitle: const Text('Manage plan, benefits, and payment proof'), onTap: () => Navigator.pushNamed(context, '/customer/membership'))),
+            Card(child: ListTile(leading: const Icon(Icons.stars), title: const Text('My Loyalty Points'), onTap: () => Navigator.pushNamed(context, '/customer/loyalty'))),
+            const SizedBox(height: 12),
             CustomButton(
               text: 'Sign Out',
               isOutlined: true,

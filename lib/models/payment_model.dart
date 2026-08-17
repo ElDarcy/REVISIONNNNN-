@@ -4,6 +4,9 @@ class PaymentModel {
   final String userId;
   final double amount;
   final String method;
+  /// `laundry` is the original order payment; `delivery_fee` is a separate
+  /// final-fulfilment payment for the same order.
+  final String paymentType;
   final String status;
   final String? referenceNumber;
   final String? receiptImageUrl;
@@ -21,6 +24,7 @@ class PaymentModel {
     required this.userId,
     required this.amount,
     this.method = 'GCash',
+    this.paymentType = 'laundry',
     this.status = 'Pending Verification',
     this.referenceNumber,
     this.receiptImageUrl,
@@ -40,6 +44,7 @@ class PaymentModel {
       'userId': userId,
       'amount': amount,
       'method': method,
+      'paymentType': paymentType,
       'status': status,
       'referenceNumber': referenceNumber,
       'receiptImageUrl': receiptImageUrl,
@@ -60,6 +65,7 @@ class PaymentModel {
       userId: map['userId'] ?? '',
       amount: (map['amount'] ?? 0).toDouble(),
       method: map['method'] ?? 'GCash',
+      paymentType: map['paymentType'] ?? 'laundry',
       status: map['status'] ?? 'Pending Verification',
       referenceNumber: map['referenceNumber'],
       receiptImageUrl: map['receiptImageUrl'],
@@ -88,6 +94,7 @@ class PaymentModel {
     String? userId,
     double? amount,
     String? method,
+    String? paymentType,
     String? status,
     String? referenceNumber,
     String? receiptImageUrl,
@@ -105,6 +112,7 @@ class PaymentModel {
       userId: userId ?? this.userId,
       amount: amount ?? this.amount,
       method: method ?? this.method,
+      paymentType: paymentType ?? this.paymentType,
       status: status ?? this.status,
       referenceNumber: referenceNumber ?? this.referenceNumber,
       receiptImageUrl: receiptImageUrl ?? this.receiptImageUrl,

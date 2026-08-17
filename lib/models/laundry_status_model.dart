@@ -3,6 +3,11 @@ enum LaundryStatus {
   pendingPayment,
   paid,
   orderReceived,
+  awaitingPickup,
+  pickupAssigned,
+  collected,
+  inTransit,
+  receivedAtShop,
   paymentPendingVerification,
   paymentVerified,
   waitingForMachine,
@@ -29,6 +34,16 @@ enum LaundryStatus {
         return 'Paid';
       case LaundryStatus.orderReceived:
         return 'Order Received';
+      case LaundryStatus.awaitingPickup:
+        return 'Awaiting Pickup';
+      case LaundryStatus.pickupAssigned:
+        return 'Pickup Assigned';
+      case LaundryStatus.collected:
+        return 'Laundry Collected';
+      case LaundryStatus.inTransit:
+        return 'In Transit';
+      case LaundryStatus.receivedAtShop:
+        return 'Received at Shop';
       case LaundryStatus.paymentPendingVerification:
         return 'Payment Pending Verification';
       case LaundryStatus.paymentVerified:
@@ -62,6 +77,30 @@ enum LaundryStatus {
     }
   }
 
+  /// Human-friendly display value for customers and staff.
+  String get displayValue {
+    switch (this) {
+      case LaundryStatus.awaitingPickup:
+        return 'Staff Pickup Requested';
+      case LaundryStatus.pickupAssigned:
+        return 'Staff Pickup in Progress';
+      case LaundryStatus.receivedAtShop:
+        return 'Received at Shop';
+      case LaundryStatus.readyForDelivery:
+        return 'Ready for Staff Delivery';
+      case LaundryStatus.readyForPickup:
+        return 'Ready for Customer Pickup';
+      case LaundryStatus.outForDelivery:
+        return 'Staff Delivery in Progress';
+      case LaundryStatus.paymentPendingVerification:
+        return 'Awaiting Payment Verification';
+      case LaundryStatus.paymentVerified:
+        return 'PAID';
+      default:
+        return value;
+    }
+  }
+
   static LaundryStatus fromString(String status) {
     switch (status) {
       case 'Pending':
@@ -72,6 +111,16 @@ enum LaundryStatus {
         return LaundryStatus.paid;
       case 'Order Received':
         return LaundryStatus.orderReceived;
+      case 'Awaiting Pickup':
+        return LaundryStatus.awaitingPickup;
+      case 'Pickup Assigned':
+        return LaundryStatus.pickupAssigned;
+      case 'Laundry Collected':
+        return LaundryStatus.collected;
+      case 'In Transit':
+        return LaundryStatus.inTransit;
+      case 'Received at Shop':
+        return LaundryStatus.receivedAtShop;
       case 'Payment Pending Verification':
         return LaundryStatus.paymentPendingVerification;
       case 'Payment Verified':
@@ -109,6 +158,11 @@ enum LaundryStatus {
 
   bool get isProcessing =>
       this == LaundryStatus.orderReceived ||
+      this == LaundryStatus.awaitingPickup ||
+      this == LaundryStatus.pickupAssigned ||
+      this == LaundryStatus.collected ||
+      this == LaundryStatus.inTransit ||
+      this == LaundryStatus.receivedAtShop ||
       this == LaundryStatus.paymentPendingVerification ||
       this == LaundryStatus.paymentVerified ||
       this == LaundryStatus.waitingForMachine ||

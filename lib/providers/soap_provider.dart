@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:uuid/uuid.dart';
 import '../models/soap_model.dart';
 
 class SoapProvider extends ChangeNotifier {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final _uuid = const Uuid();
 
   List<SoapModel> _soaps = [];
   bool _isLoading = false;
@@ -149,6 +147,7 @@ class SoapProvider extends ChangeNotifier {
       await _firestore.collection('soaps').doc(soapId).update({
         'stockQuantity': quantity,
         'stockStatus': newStatus,
+        'updatedAt': FieldValue.serverTimestamp(),
       });
 
       final updatedSoap = soap.copyWith(
@@ -163,6 +162,55 @@ class SoapProvider extends ChangeNotifier {
     } catch (e) {
       _error = e.toString();
       notifyListeners();
+    }
+  }
+
+  /// Atomically increments the stock quantity and logs the restock action.
+  Future<bool> restockSoap({
+    required String soapId,
+    required int quantity,
+    required String adminId,
+  }) async {
+    if (quantity <= 0) return false;
+    try {
+      final soapRef = _firestore.collection('soaps').doc(soapId);
+      
+      await _firestore.runTransaction((transaction) async {
+        final soapSnap = await transaction.get(soapRef);
+        if (!soapSnap.exists) throw Exception('Soap not found');
+        
+        final data = soapSnap.data()!;
+        final currentStock = data['stockQuantity'] as int? ?? 0;
+        final newStock = currentStock + quantity;
+        final soapName = data['name'] ?? 'Unknown';
+        
+        // 1. Update stock
+        transaction.update(soapRef, {
+          'stockQuantity': newStock,
+          'stockStatus': 'In Stock',
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+        
+        // 2. Log Restock
+        final logRef = _firestore.collection('inventoryLogs').doc();
+        transaction.set(logRef, {
+          'soapId': soapId,
+          'soapName': soapName,
+          'action': 'restock',
+          'quantity': quantity,
+          'previousStock': currentStock,
+          'newStock': newStock,
+          'performedBy': adminId,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      });
+      
+      await loadSoaps();
+      return true;
+    } catch (e) {
+      _error = 'Restock failed: $e';
+      notifyListeners();
+      return false;
     }
   }
 

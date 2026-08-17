@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/user_model.dart';
 import '../models/role_model.dart';
+import '../services/notification_service.dart';
 
 class AuthProvider extends ChangeNotifier {
   final firebase_auth.FirebaseAuth _auth = firebase_auth.FirebaseAuth.instance;
@@ -26,6 +27,7 @@ class AuthProvider extends ChangeNotifier {
     _auth.authStateChanges().listen((firebaseUser) async {
       if (firebaseUser != null) {
         await _loadUser(firebaseUser.uid);
+        await NotificationService().registerToken(firebaseUser.uid);
       } else {
         _user = null;
         notifyListeners();

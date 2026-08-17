@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../providers/auth_provider.dart';
+import '../../../providers/soap_provider.dart';
+import '../../../models/soap_model.dart';
 
 class AdminDashboardScreen extends StatelessWidget {
   const AdminDashboardScreen({super.key});
@@ -137,6 +139,8 @@ class AdminDashboardScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 24),
+                _buildLowStockAlert(context),
+                const SizedBox(height: 24),
                 const Text(
                   'Quick Actions',
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
@@ -145,7 +149,7 @@ class AdminDashboardScreen extends StatelessWidget {
                 _buildActionTile(
                   context,
                   Icons.receipt_long,
-                  'Manage Orders',
+                  'Manage Laundry Transactions',
                   '/admin/orders',
                 ),
                 _buildActionTile(
@@ -184,11 +188,118 @@ class AdminDashboardScreen extends StatelessWidget {
                   'Soap Inventory',
                   '/admin/soaps',
                 ),
+                _buildActionTile(
+                  context,
+                  Icons.tune,
+                  'Business Configuration',
+                  '/admin/business-configuration',
+                ),
+                _buildActionTile(context, Icons.workspace_premium, 'Verify Membership Payments', '/admin/membership-verification'),
+                _buildActionTile(context, Icons.sell, 'Promotion Management', '/admin/promotions'),
+                _buildActionTile(context, Icons.stars, 'Loyalty Reward Management', '/admin/loyalty-rewards'),
               ],
             ),
           );
         },
       ),
+    );
+  }
+
+  Widget _buildLowStockAlert(BuildContext context) {
+    return StreamBuilder<List<SoapModel>>(
+      stream: context.read<SoapProvider>().streamSoaps(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) return const SizedBox.shrink();
+        
+        final lowStockItems = snapshot.data!.where((s) => s.isLowStock || s.isOutOfStock).toList();
+        if (lowStockItems.isEmpty) return const SizedBox.shrink();
+
+        final outOfStockCount = lowStockItems.where((s) => s.isOutOfStock).length;
+        final lowStockCount = lowStockItems.where((s) => s.isLowStock).length;
+
+        return Card(
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: BorderSide(color: Colors.red.shade200),
+          ),
+          color: Colors.red.shade50,
+          child: InkWell(
+            onTap: () => Navigator.pushNamed(context, '/admin/soaps'),
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.warning_amber_rounded, color: Colors.red.shade700),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'INVENTORY ALERT',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: Colors.red.shade800,
+                            letterSpacing: 1.2,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                      Icon(Icons.chevron_right, color: Colors.red.shade300),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  if (outOfStockCount > 0)
+                    Text(
+                      '⚠ $outOfStockCount product(s) OUT OF STOCK',
+                      style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black87, fontSize: 14),
+                    ),
+                  if (lowStockCount > 0)
+                    Padding(
+                      padding: EdgeInsets.only(top: outOfStockCount > 0 ? 4 : 0),
+                      child: Text(
+                        '⚠ $lowStockCount product(s) running low (< ${SoapModel.lowStockThreshold} units)',
+                        style: const TextStyle(fontWeight: FontWeight.w500, color: Colors.black87, fontSize: 13),
+                      ),
+                    ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: lowStockItems.take(5).map((soap) {
+                      return Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: soap.isOutOfStock ? Colors.red.shade100 : Colors.orange.shade100,
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          '${soap.name}: ${soap.stockQuantity}',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: soap.isOutOfStock ? Colors.red.shade900 : Colors.orange.shade900,
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                  if (lowStockItems.length > 5)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        'and ${lowStockItems.length - 5} more...',
+                        style: TextStyle(fontSize: 11, fontStyle: FontStyle.italic, color: Colors.red.shade700),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 

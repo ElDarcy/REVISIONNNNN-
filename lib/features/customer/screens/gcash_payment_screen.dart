@@ -13,8 +13,16 @@ import '../../../config/app_config.dart';
 class GCashPaymentScreen extends StatefulWidget {
   final String orderId;
   final double amount;
+  final String paymentType;
+  final bool returnOnSuccess;
 
-  const GCashPaymentScreen({super.key, required this.orderId, this.amount = 0});
+  const GCashPaymentScreen({
+    super.key,
+    required this.orderId,
+    this.amount = 0,
+    this.paymentType = 'laundry',
+    this.returnOnSuccess = false,
+  });
 
   @override
   State<GCashPaymentScreen> createState() => _GCashPaymentScreenState();
@@ -99,6 +107,7 @@ class _GCashPaymentScreenState extends State<GCashPaymentScreen> {
       amount: widget.amount,
       referenceNumber: _referenceController.text.trim(),
       receiptImagePath: _receiptImage!.path,
+      paymentType: widget.paymentType,
     );
 
     setState(() => _isLoading = false);
@@ -106,6 +115,10 @@ class _GCashPaymentScreenState extends State<GCashPaymentScreen> {
     if (!mounted) return;
 
     if (success) {
+      if (widget.returnOnSuccess) {
+        Navigator.pop(context, true);
+        return;
+      }
       Navigator.pushNamedAndRemoveUntil(
         context,
         '/customer/home',

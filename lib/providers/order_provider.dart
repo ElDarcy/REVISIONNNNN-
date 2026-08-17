@@ -10,6 +10,7 @@ import '../engines/delivery_fee_engine.dart';
 import '../engines/service_time_estimator.dart';
 import '../engines/order_status_flow_engine.dart';
 import '../engines/order_load_engine.dart';
+import '../engines/order_scheduling_gate.dart';
 
 class OrderProvider extends ChangeNotifier {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -143,17 +144,8 @@ class OrderProvider extends ChangeNotifier {
         cycles,
       );
 
-      // 1. CREATE LOADS FIRST (per-load scheduling requirement).
-      // This ensures loads are visible before the scheduler is triggered.
-      final orderObj = OrderModel.fromMap(orderData, orderId);
-      final loadIds = await OrderLoadEngine.createLoadsForOrder(
-        _firestore,
-        orderObj,
-      );
-
-      // 2. UPDATE STATUS SECOND (triggers automated scheduler).
-      // NOTE: estimatedFinishTime is intentionally OMITTED here.
-      // The timer must only start when staff clicks "Start Washing" (StartMachineStep).
+      // Payment approval alone must not create loads from declared weight.
+      // The scheduling gate releases the order only after actual weight is approved.
       await _firestore.collection('orders').doc(orderId).update({
         'status': OrderStatusFlowEngine.statusPaymentVerified,
         'paymentStatus': 'Verified',
@@ -161,8 +153,8 @@ class OrderProvider extends ChangeNotifier {
         'approvedBy': adminId,
         'estimatedDuration': estimatedDuration,
         'updatedAt': now.toIso8601String(),
-        if (loadIds.isNotEmpty) 'numberOfLoads': loadIds.length,
       });
+      await OrderSchedulingGate.releaseIfEligible(_firestore, orderId);
 
       return true;
     } catch (e) {
@@ -242,11 +234,7 @@ class OrderProvider extends ChangeNotifier {
         });
       });
 
-      // 3. Ensure load records are created (idempotent).
-      final orderObj = await getOrderById(orderId);
-      if (orderObj != null) {
-        await OrderLoadEngine.createLoadsForOrder(_firestore, orderObj);
-      }
+      await OrderSchedulingGate.releaseIfEligible(_firestore, orderId);
       return true;
     } catch (e) {
       debugPrint('approveAndAssignStaff error: $e');
@@ -404,6 +392,11 @@ class OrderProvider extends ChangeNotifier {
     List<Map<String, dynamic>>? selectedSoaps,
     String? notes,
     String deliveryMethod = 'Pickup',
+    String orderType = 'online',
+    String? customerName,
+    String? customerPhone,
+    String? paymentMethodOverride,
+    String? paymentStatusOverride,
   }) async {
     _isLoading = true;
     _error = null;
@@ -433,6 +426,8 @@ class OrderProvider extends ChangeNotifier {
         userId: userId,
         items: items,
         weight: weight,
+        estimatedWeight: weight,
+        weightStatus: 'pending',
         subtotal: computedSubtotal,
         deliveryFee: deliveryFee,
         totalAmount: total,
@@ -442,9 +437,21 @@ class OrderProvider extends ChangeNotifier {
         customerLongitude: deliveryMethod == 'Pickup' ? customerLng : null,
         distanceKm: deliveryMethod == 'Pickup' ? distance : null,
         notes: notes,
+        orderType: orderType,
+        createdBy: orderType == 'walk_in' ? userId : null,
+        customerName: customerName,
+        customerPhone: customerPhone,
+        paymentMethod: paymentMethodOverride ?? 'GCash',
+        paymentStatus: paymentStatusOverride ?? 'Pending Verification',
+        status: paymentStatusOverride == 'Verified'
+            ? LaundryStatus.paymentVerified
+            : LaundryStatus.pending,
       );
 
       await _firestore.collection('orders').doc(orderId).set(order.toMap());
+      if (order.paymentStatus == 'Verified') {
+        await OrderSchedulingGate.releaseIfEligible(_firestore, orderId);
+      }
       _isLoading = false;
       notifyListeners();
       return orderId;
@@ -453,6 +460,105 @@ class OrderProvider extends ChangeNotifier {
       _isLoading = false;
       notifyListeners();
       return null;
+    }
+  }
+
+  /// Saves staff camera evidence and moves the order into the admin-review
+  /// state. The order is deliberately not schedulable until approval.
+  Future<bool> submitWeightVerification({
+    required String orderId,
+    required String staffId,
+    required double actualWeight,
+    required String proofId,
+    required String proofBase64,
+  }) async {
+    if (staffId.isEmpty ||
+        !actualWeight.isFinite ||
+        actualWeight <= 0 ||
+        proofId.isEmpty ||
+        proofBase64.isEmpty) {
+      return false;
+    }
+
+    try {
+      final now = DateTime.now();
+      final orderRef = _firestore.collection('orders').doc(orderId);
+      final proofRef = _firestore.collection('transaction_proofs').doc(proofId);
+      await _firestore.runTransaction((transaction) async {
+        final order = await transaction.get(orderRef);
+        if (!order.exists) throw StateError('Order does not exist.');
+        final data = order.data()!;
+        final assignedStaff = data['assignedTo'] ?? data['staffId'];
+        if (assignedStaff != staffId) {
+          throw StateError('Order is not assigned to this staff member.');
+        }
+        final weightStatus = data['weightStatus'];
+        if (weightStatus != 'pending' && weightStatus != 'rejected') {
+          throw StateError('Weight has already been submitted.');
+        }
+
+        transaction.set(proofRef, {
+          'txn_id': orderId,
+          'proof_type': 'weight_verification',
+          'image_base64': proofBase64,
+          'submitted_by': staffId,
+          'createdAt': now.toIso8601String(),
+        });
+        transaction.update(orderRef, {
+          'actualWeight': actualWeight,
+          'weightStatus': 'submitted',
+          'weightProofId': proofId,
+          'weightSubmittedBy': staffId,
+          'weightSubmittedAt': now.toIso8601String(),
+          'weightVerificationNote': null,
+          'updatedAt': now.toIso8601String(),
+        });
+      });
+      return true;
+    } catch (e) {
+      debugPrint('submitWeightVerification error: $e');
+      _error = 'Failed to submit weight verification.';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Admin decision for a submitted scale proof. Approved actual weight is
+  /// released through the shared scheduling gate, which creates matching loads.
+  Future<bool> verifyWeightVerification({
+    required String orderId,
+    required String adminId,
+    required bool approved,
+    String? note,
+  }) async {
+    if (adminId.isEmpty) return false;
+    try {
+      final now = DateTime.now();
+      final orderRef = _firestore.collection('orders').doc(orderId);
+      await _firestore.runTransaction((transaction) async {
+        final order = await transaction.get(orderRef);
+        if (!order.exists || order.data()!['weightStatus'] != 'submitted') {
+          throw StateError('No submitted weight verification to review.');
+        }
+        transaction.update(orderRef, {
+          'weightStatus': approved ? 'verified' : 'rejected',
+          'weightVerifiedBy': approved ? adminId : null,
+          'weightVerifiedAt': approved ? now.toIso8601String() : null,
+          'weightVerificationNote': note?.trim().isNotEmpty == true
+              ? note!.trim()
+              : (approved ? null : 'Weight verification was rejected.'),
+          'updatedAt': now.toIso8601String(),
+        });
+      });
+      if (approved) {
+        await OrderSchedulingGate.releaseIfEligible(_firestore, orderId);
+      }
+      return true;
+    } catch (e) {
+      debugPrint('verifyWeightVerification error: $e');
+      _error = 'Failed to verify weight.';
+      notifyListeners();
+      return false;
     }
   }
 

@@ -1,8 +1,75 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../models/notification_model.dart';
+import '../core/constants/app_colors.dart';
+import 'package:flutter/material.dart';
 
 class NotificationService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseMessaging _fcm = FirebaseMessaging.instance;
+  final FlutterLocalNotificationsPlugin _localNotifications = FlutterLocalNotificationsPlugin();
+
+  static final NotificationService instance = NotificationService._();
+  NotificationService._();
+  factory NotificationService() => instance;
+
+  Future<void> initialize() async {
+    // 1. Request Permissions
+    await _fcm.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+
+    // 2. Local Notifications Setup (for foreground display)
+    const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const iosInit = DarwinInitializationSettings();
+    await _localNotifications.initialize(
+      const InitializationSettings(android: androidInit, iOS: iosInit),
+    );
+
+    // 3. Listen for Foreground Messages
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      _showForegroundNotification(message);
+    });
+  }
+
+  Future<void> _showForegroundNotification(RemoteMessage message) async {
+    const androidDetails = AndroidNotificationDetails(
+      'laundry_cycles',
+      'Laundry Cycles',
+      importance: Importance.max,
+      priority: Priority.high,
+      color: AppColors.primary,
+    );
+    const notificationDetails = NotificationDetails(android: androidDetails);
+    
+    if (message.notification != null) {
+      await _localNotifications.show(
+        0,
+        message.notification!.title,
+        message.notification!.body,
+        notificationDetails,
+      );
+    }
+  }
+
+  Future<void> registerToken(String userId) async {
+    final token = await _fcm.getToken();
+    if (token == null) return;
+
+    await _firestore
+        .collection('users')
+        .doc(userId)
+        .collection('fcmTokens')
+        .doc(token)
+        .set({
+      'token': token,
+      'createdAt': FieldValue.serverTimestamp(),
+      'lastUsed': FieldValue.serverTimestamp(),
+    });
+  }
 
   Stream<List<NotificationModel>> getUserNotifications(String userId) {
     return _firestore
@@ -24,6 +91,11 @@ class NotificationService {
     String type = 'general',
     String? orderId,
   }) async {
+    if (userId == 'broadcast_staff') {
+      await sendStaffNotification(title: title, body: body, type: type, orderId: orderId);
+      return;
+    }
+    
     final docRef = _firestore.collection('notifications').doc();
     final notification = NotificationModel(
       id: docRef.id,
@@ -34,6 +106,31 @@ class NotificationService {
       orderId: orderId,
     );
     await docRef.set(notification.toMap());
+  }
+
+  Future<void> sendStaffNotification({
+    required String title,
+    required String body,
+    String type = 'operational',
+    String? orderId,
+  }) async {
+    final staffSnap = await _firestore.collection('users').where('role', isEqualTo: 'staff').get();
+    final batch = _firestore.batch();
+    
+    for (final staffDoc in staffSnap.docs) {
+      final docRef = _firestore.collection('notifications').doc();
+      final notification = NotificationModel(
+        id: docRef.id,
+        userId: staffDoc.id,
+        title: title,
+        body: body,
+        type: type,
+        orderId: orderId,
+      );
+      batch.set(docRef, notification.toMap());
+    }
+    
+    await batch.commit();
   }
 
   Future<void> sendOrderUpdateNotification({

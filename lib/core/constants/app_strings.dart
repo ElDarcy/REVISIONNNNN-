@@ -26,9 +26,9 @@ class AppStrings {
 
   // Customer
   static const String ourServices = 'Our Services';
-  static const String createOrder = 'Create Order';
-  static const String orderHistory = 'Order History';
-  static const String trackOrder = 'Track Order';
+  static const String createOrder = 'Create Laundry Transaction';
+  static const String orderHistory = 'Laundry Transaction History';
+  static const String trackOrder = 'Track Laundry Transaction';
   static const String checkout = 'Checkout';
   static const String payment = 'Payment';
   static const String uploadReceipt = 'Upload Receipt';
@@ -38,7 +38,7 @@ class AppStrings {
   static const String pending = 'Pending';
   static const String pendingPayment = 'Pending Payment';
   static const String paid = 'Paid';
-  static const String orderReceived = 'Order Received';
+  static const String orderReceived = 'Laundry Transaction Received';
   static const String paymentPendingVerification =
       'Payment Pending Verification';
   static const String paymentVerified = 'Payment Verified';
@@ -64,7 +64,7 @@ class AppStrings {
   // Admin
   static const String dashboard = 'Dashboard';
   static const String manageUsers = 'Manage Users';
-  static const String manageOrders = 'Manage Orders';
+  static const String manageOrders = 'Manage Laundry Transactions';
   static const String verifyPayments = 'Verify Payments';
   static const String transactions = 'Transactions';
   static const String walkinTransaction = 'Walk-in Transaction';

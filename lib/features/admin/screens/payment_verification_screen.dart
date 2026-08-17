@@ -81,7 +81,7 @@ class PaymentVerificationScreen extends StatelessWidget {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  'Order #${payment.orderId.substring(0, 8).toUpperCase()}',
+                                  'Transaction #${payment.orderId.substring(0, 8).toUpperCase()}',
                                   style: const TextStyle(
                                     fontWeight: FontWeight.bold,
                                     fontSize: 16,
@@ -504,7 +504,7 @@ class PaymentVerificationScreen extends StatelessWidget {
         content: const Text(
           'By approving this payment:\n'
           '- Payment status will be set to Verified\n'
-          '- Order status will be set to Payment Verified\n'
+          '- Transaction status will be set to Payment Verified\n'
           '- The automated scheduler will assign the least-used machine\n'
           '- Laundry staff will start the cycle from the Laundry Tasks screen\n'
           '\nProceed with approval?',

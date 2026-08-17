@@ -45,7 +45,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   double _distance = 0;
   String _address = '';
   double _deliveryFee = 0;
-  String _deliveryMethod = 'Pickup'; // 'Pickup' or 'Drop-off'
+  // `Pickup` is the persisted legacy value for a staff collection request.
+  // Keep that value so existing orders and pricing continue to work.
+  String _deliveryMethod = 'Pickup'; // Request Pickup or Drop-off
 
   @override
   void initState() {
@@ -103,7 +105,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       return;
     }
 
-    // For Pickup, check if within service area
+    // A staff pickup request must be within the configured service area.
     if (_deliveryMethod == 'Pickup' &&
         !ServiceAreaEngine.isInServiceArea(_latitude, _longitude)) {
       if (mounted) {
@@ -266,7 +268,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  // Delivery Method
+                  // Collection Method
                   Card(
                     child: Padding(
                       padding: const EdgeInsets.all(16),
@@ -274,7 +276,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text(
-                            'Delivery Method',
+                            'Collection Method',
                             style: TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
@@ -286,7 +288,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                               Expanded(
                                 child: _buildDeliveryOption(
                                   icon: Icons.motorcycle,
-                                  title: 'Pickup',
+                                  title: 'Request Pickup',
                                   subtitle: 'We pick up your laundry',
                                   isSelected: _deliveryMethod == 'Pickup',
                                   onTap: () => setState(() {

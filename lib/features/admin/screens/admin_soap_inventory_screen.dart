@@ -7,6 +7,8 @@ import '../../../core/utils/currency_helper.dart';
 import '../../../providers/soap_provider.dart';
 import '../../../models/soap_model.dart';
 
+import '../../../providers/auth_provider.dart';
+
 class AdminSoapInventoryScreen extends StatefulWidget {
   const AdminSoapInventoryScreen({super.key});
 
@@ -352,6 +354,9 @@ class _AdminSoapInventoryScreenState extends State<AdminSoapInventoryScreen> {
 
   Widget _buildSoapCard(SoapModel soap, SoapProvider provider) {
     final color = _parseColorHex(soap.colorHex);
+    final statusColor = soap.isOutOfStock 
+        ? AppColors.error 
+        : (soap.isLowStock ? Colors.orange : AppColors.success);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -382,12 +387,33 @@ class _AdminSoapInventoryScreenState extends State<AdminSoapInventoryScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      soap.name,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w600,
-                        fontSize: 15,
-                      ),
+                    Row(
+                      children: [
+                        Text(
+                          soap.name,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: statusColor.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: statusColor.withValues(alpha: 0.2)),
+                          ),
+                          child: Text(
+                            soap.inventoryStatus.toUpperCase(),
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w800,
+                              color: statusColor,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 2),
                     Text(
@@ -416,28 +442,12 @@ class _AdminSoapInventoryScreenState extends State<AdminSoapInventoryScreen> {
                           ),
                         ),
                         const SizedBox(width: 12),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: soap.isInStock
-                                ? AppColors.success.withValues(alpha: 0.15)
-                                : AppColors.error.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            soap.isInStock
-                                ? 'In Stock (${soap.stockQuantity})'
-                                : 'Out of Stock',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w500,
-                              color: soap.isInStock
-                                  ? AppColors.success
-                                  : AppColors.error,
-                            ),
+                        Text(
+                          'Stock: ${soap.stockQuantity}',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: statusColor,
                           ),
                         ),
                       ],
@@ -448,56 +458,38 @@ class _AdminSoapInventoryScreenState extends State<AdminSoapInventoryScreen> {
               // Actions
               PopupMenuButton<String>(
                 onSelected: (value) async {
-                  if (value == 'toggle') {
+                  if (value == 'restock') {
+                    _showRestockDialog(soap);
+                  } else if (value == 'toggle') {
                     await provider.toggleStockStatus(soap.id);
                   } else if (value == 'delete') {
-                    final confirm = await showDialog<bool>(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        title: const Text('Delete Soap'),
-                        content: Text(
-                          'Are you sure you want to delete "${soap.name}"?',
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(ctx, false),
-                            child: const Text('Cancel'),
-                          ),
-                          TextButton(
-                            onPressed: () => Navigator.pop(ctx, true),
-                            style: TextButton.styleFrom(
-                              foregroundColor: AppColors.error,
-                            ),
-                            child: const Text('Delete'),
-                          ),
-                        ],
-                      ),
-                    );
-                    if (confirm == true) {
-                      await provider.deleteSoap(soap.id);
-                    }
+                    _showDeleteConfirm(soap, provider);
                   }
                 },
                 itemBuilder: (context) => [
+                  PopupMenuItem(
+                    value: 'restock',
+                    child: Row(
+                      children: [
+                        Icon(Icons.add_business, size: 20, color: AppColors.primary),
+                        const SizedBox(width: 8),
+                        const Text('Restock Inventory'),
+                      ],
+                    ),
+                  ),
                   PopupMenuItem(
                     value: 'toggle',
                     child: Row(
                       children: [
                         Icon(
-                          soap.isInStock
-                              ? Icons.remove_shopping_cart
-                              : Icons.add_shopping_cart,
+                          soap.isActive
+                              ? Icons.visibility_off
+                              : Icons.visibility,
                           size: 20,
-                          color: soap.isInStock
-                              ? AppColors.error
-                              : AppColors.success,
+                          color: Colors.grey,
                         ),
                         const SizedBox(width: 8),
-                        Text(
-                          soap.isInStock
-                              ? 'Mark Out of Stock'
-                              : 'Mark In Stock',
-                        ),
+                        Text(soap.isActive ? 'Mark Inactive' : 'Mark Active'),
                       ],
                     ),
                   ),
@@ -522,5 +514,84 @@ class _AdminSoapInventoryScreenState extends State<AdminSoapInventoryScreen> {
         ),
       ),
     );
+  }
+
+  void _showRestockDialog(SoapModel soap) {
+    final qtyController = TextEditingController();
+    final adminId = context.read<AuthProvider>().user?.id ?? '';
+    bool isSaving = false;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Restock ${soap.name}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Current Stock: ${soap.stockQuantity} ${soap.unit}(s)'),
+              const SizedBox(height: 16),
+              CustomTextField(
+                controller: qtyController,
+                labelText: 'Quantity to Add',
+                hintText: 'e.g. 50',
+                keyboardType: TextInputType.number,
+                prefixIcon: const Icon(Icons.add_shopping_cart),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            CustomButton(
+              text: 'Add to Stock',
+              isLoading: isSaving,
+              onPressed: () async {
+                final qty = int.tryParse(qtyController.text) ?? 0;
+                if (qty <= 0) return;
+                
+                setDialogState(() => isSaving = true);
+                final success = await context.read<SoapProvider>().restockSoap(
+                  soapId: soap.id,
+                  quantity: qty,
+                  adminId: adminId,
+                );
+                
+                if (ctx.mounted) {
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(success ? 'Inventory updated!' : 'Failed to restock.'),
+                      backgroundColor: success ? AppColors.success : AppColors.error,
+                    ),
+                  );
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showDeleteConfirm(SoapModel soap, SoapProvider provider) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Soap'),
+        content: Text('Are you sure you want to delete "${soap.name}"?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: AppColors.error),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true) {
+      await provider.deleteSoap(soap.id);
+    }
   }
 }

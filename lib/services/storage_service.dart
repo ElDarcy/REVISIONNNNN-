@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
 class StorageService {
@@ -31,6 +32,13 @@ class StorageService {
       contentType: 'image/jpeg',
       customMetadata: {'uploaded': DateTime.now().toIso8601String()},
     );
+
+    if (kIsWeb) {
+      final bytes = await imageFile.readAsBytes();
+      final uploadTask = ref.putData(bytes, metadata);
+      final snapshot = await uploadTask;
+      return await snapshot.ref.getDownloadURL();
+    }
 
     final uploadTask = ref.putFile(imageFile, metadata);
     final snapshot = await uploadTask;

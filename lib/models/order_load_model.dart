@@ -43,6 +43,12 @@ class OrderLoadModel {
 
   final LaundryStatus status;
 
+  // Notification flags to prevent duplicates
+  final bool washWarningSent;
+  final bool washCompletionSent;
+  final bool dryWarningSent;
+  final bool dryCompletionSent;
+
   // Wash-cycle timing (only set when the wash actually starts).
   final DateTime? washCycleStart;
   final DateTime? washEstimatedFinish;
@@ -63,6 +69,10 @@ class OrderLoadModel {
     this.washerId,
     this.dryerId,
     this.status = LaundryStatus.pending,
+    this.washWarningSent = false,
+    this.washCompletionSent = false,
+    this.dryWarningSent = false,
+    this.dryCompletionSent = false,
     this.washCycleStart,
     this.washEstimatedFinish,
     this.dryCycleStart,
@@ -97,6 +107,10 @@ class OrderLoadModel {
     String? washerId,
     String? dryerId,
     LaundryStatus? status,
+    bool? washWarningSent,
+    bool? washCompletionSent,
+    bool? dryWarningSent,
+    bool? dryCompletionSent,
     DateTime? washCycleStart,
     DateTime? washEstimatedFinish,
     DateTime? dryCycleStart,
@@ -114,6 +128,10 @@ class OrderLoadModel {
       washerId: clearWasher ? null : (washerId ?? this.washerId),
       dryerId: clearDryer ? null : (dryerId ?? this.dryerId),
       status: status ?? this.status,
+      washWarningSent: washWarningSent ?? this.washWarningSent,
+      washCompletionSent: washCompletionSent ?? this.washCompletionSent,
+      dryWarningSent: dryWarningSent ?? this.dryWarningSent,
+      dryCompletionSent: dryCompletionSent ?? this.dryCompletionSent,
       washCycleStart: washCycleStart ?? this.washCycleStart,
       washEstimatedFinish: washEstimatedFinish ?? this.washEstimatedFinish,
       dryCycleStart: dryCycleStart ?? this.dryCycleStart,
@@ -133,6 +151,10 @@ class OrderLoadModel {
       'washerId': washerId,
       'dryerId': dryerId,
       'status': status.value,
+      'washWarningSent': washWarningSent,
+      'washCompletionSent': washCompletionSent,
+      'dryWarningSent': dryWarningSent,
+      'dryCompletionSent': dryCompletionSent,
       'washCycleStart': washCycleStart?.toIso8601String(),
       'washEstimatedFinish': washEstimatedFinish?.toIso8601String(),
       'dryCycleStart': dryCycleStart?.toIso8601String(),
@@ -169,6 +191,10 @@ class OrderLoadModel {
       washerId: washerId,
       dryerId: dryerId,
       status: LaundryStatus.fromString(map['status'] ?? 'Payment Verified'),
+      washWarningSent: map['washWarningSent'] ?? false,
+      washCompletionSent: map['washCompletionSent'] ?? false,
+      dryWarningSent: map['dryWarningSent'] ?? false,
+      dryCompletionSent: map['dryCompletionSent'] ?? false,
       washCycleStart:
           _parseDate(map['washCycleStart']) ?? _parseDate(map['cycleStart']),
       washEstimatedFinish:

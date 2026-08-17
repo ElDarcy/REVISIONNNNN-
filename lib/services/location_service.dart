@@ -1,9 +1,34 @@
+import 'dart:async';
+
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 
+typedef ReverseGeocode = Future<List<Placemark>> Function(
+  double latitude,
+  double longitude,
+);
+
 class LocationService {
+  LocationService({ReverseGeocode? reverseGeocode})
+      : _reverseGeocode = reverseGeocode ?? placemarkFromCoordinates;
+
+  static const _reverseGeocodeTimeout = Duration(seconds: 4);
+  static const _reverseGeocodeAttempts = 2;
+
+  final ReverseGeocode _reverseGeocode;
+
+  static bool isValidCoordinate(double latitude, double longitude) {
+    return latitude.isFinite &&
+        longitude.isFinite &&
+        latitude >= -90 &&
+        latitude <= 90 &&
+        longitude >= -180 &&
+        longitude <= 180 &&
+        !(latitude == 0 && longitude == 0);
+  }
+
   Future<Position> getCurrentLocation() async {
-    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
       throw Exception('Location services are disabled.');
     }
@@ -22,39 +47,89 @@ class LocationService {
       );
     }
 
-    return await Geolocator.getCurrentPosition(
+    return Geolocator.getCurrentPosition(
       desiredAccuracy: LocationAccuracy.high,
     );
   }
 
-  Future<String> getAddressFromLatLng(double latitude, double longitude) async {
+  Future<String> getAddressFromLatLng(
+    double latitude,
+    double longitude,
+  ) async {
+    if (!isValidCoordinate(latitude, longitude)) return '';
+
     try {
-      List<Placemark> placemarks = await placemarkFromCoordinates(
-        latitude,
-        longitude,
-      );
-      if (placemarks.isNotEmpty) {
-        Placemark place = placemarks.first;
-        return '${place.street}, ${place.subLocality ?? place.locality}, ${place.administrativeArea}';
+      for (var attempt = 0; attempt < _reverseGeocodeAttempts; attempt++) {
+        try {
+          final placemarks = await _reverseGeocode(latitude, longitude)
+              .timeout(_reverseGeocodeTimeout);
+          if (placemarks.isEmpty) continue;
+
+          final address = formatPlacemark(placemarks.first);
+          if (address.isNotEmpty) return address;
+        } on TimeoutException {
+          // Retry once before falling back to a coordinate-only location.
+        } catch (_) {
+          // Platform geocoding can fail transiently; the second attempt uses
+          // the same valid customer coordinates and does not alter them.
+        }
       }
-      return 'Unknown location';
-    } catch (e) {
-      return 'Unable to get address';
+      return '';
+    } catch (_) {
+      // Coordinates remain usable for navigation when the platform geocoder
+      // is unavailable. An empty display address is intentional.
+      return '';
     }
   }
 
   Future<Map<String, dynamic>> getLocationDetails() async {
     final position = await getCurrentLocation();
+    return resolveLocationDetails(
+      latitude: position.latitude,
+      longitude: position.longitude,
+    );
+  }
+
+  Future<Map<String, dynamic>> resolveLocationDetails({
+    required double latitude,
+    required double longitude,
+  }) async {
+    if (!isValidCoordinate(latitude, longitude)) {
+      throw Exception('The device returned an invalid location.');
+    }
+
     final address = await getAddressFromLatLng(
-      position.latitude,
-      position.longitude,
+      latitude,
+      longitude,
     );
 
     return {
-      'latitude': position.latitude,
-      'longitude': position.longitude,
+      'latitude': latitude,
+      'longitude': longitude,
       'address': address,
     };
+  }
+
+  /// Formats whatever the platform geocoder could resolve. Fields are
+  /// optional on Android/iOS, so a partial placemark is still useful.
+  static String formatPlacemark(Placemark place) {
+    final parts = <String>[];
+    final seen = <String>{};
+    for (final value in <String?>[
+      place.street,
+      place.subLocality,
+      place.locality,
+      place.subAdministrativeArea,
+      place.administrativeArea,
+      place.country,
+    ]) {
+      final cleaned = value?.trim() ?? '';
+      final key = cleaned.toLowerCase();
+      if (cleaned.isNotEmpty && seen.add(key)) {
+        parts.add(cleaned);
+      }
+    }
+    return parts.join(', ');
   }
 
   static double calculateDistance(
