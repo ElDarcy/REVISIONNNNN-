@@ -18,8 +18,10 @@ class OrderModel {
   final String? customerId; // null for walk-in (no auth user)
   final String? customerName;
   final String? customerPhone;
-  // Cycle timing - set ONLY when staff starts washing/drying
+  // Cycle timing - set ONLY when staff starts washing/drying.
+  // Use [estimatedFinishTime] as the single canonical field.
   final DateTime? cycleStart;
+  @Deprecated('Use estimatedFinishTime instead')
   final DateTime? estimatedFinish;
   final List<OrderItemModel> items;
   final double weight;
@@ -46,7 +48,10 @@ class OrderModel {
   final String paymentMethod;
   final String paymentStatus;
   final String? serviceType; // 'Wash Only', 'Dry Only', 'Wash and Dry'
-  final String deliveryMethod; // 'Pickup' or 'Drop-off'
+  final String deliveryMethod; // 'Pickup' or 'Drop-off' (collection method)
+  /// Fulfillment method: how completed laundry gets back to the customer.
+  /// `null` = not yet chosen, 'Personal Pickup', 'Delivery'
+  final String? fulfillmentMethod;
   final AddressModel? deliveryAddress;
   final double? customerLatitude;
   final double? customerLongitude;
@@ -54,6 +59,13 @@ class OrderModel {
   final String? notes;
   final String? assignedTo;
   final String? assignedDeliveryStaffId;
+  /// Pickup phase progress for 'Pickup' collection orders. Mirrors the
+  /// `deliveryQueue` pickup entry: null / 'Pending Pickup' / 'Pickup Assigned' /
+  /// 'Laundry Collected'.
+  final String? pickupStatus;
+  final DateTime? pickupStartedAt;
+  final DateTime? pickupCompletedAt;
+  final String? pickupCollectedBy;
   final String? collectedBy;
   final DateTime? collectedAt;
   final String? receivedBy;
@@ -64,6 +76,16 @@ class OrderModel {
   final String? cashReceivedBy;
   final DateTime? cashReceivedAt;
   final String? rejectionReason;
+  // Remittance tracking — separate from payment status
+  final String? remittanceStatus;
+  final String? remittedBy;
+  final DateTime? remittedAt;
+  final String? confirmedBy;
+  final DateTime? confirmedAt;
+  /// Cancellation audit trail (set by [OrderProvider.cancelOrder]).
+  final DateTime? cancelledAt;
+  final String? cancelledBy;
+  final String? cancellationReason;
   final DateTime createdAt;
   final DateTime? updatedAt;
   final DateTime? completedAt;
@@ -77,6 +99,14 @@ class OrderModel {
   final DateTime? deliveryDeadlineAt;
   final int? estimatedDuration;
   final DateTime? estimatedFinishTime;
+  // Fulfillment fields - set when customer chooses pickup or delivery
+  final DateTime? fulfillmentRequestedAt;
+  // Pickup verification fields
+  final String? pickupToken;
+  final String? pickupCode;
+  final DateTime? pickupVerifiedAt;
+  final String? pickupVerifiedBy;
+  final DateTime? pickupExpiresAt;
   // Machine assignment fields (set when staff starts a machine)
   final String? assignedMachineId; // e.g. wash_03
   final String? assignedMachineType; // 'wash' | 'dry'
@@ -88,6 +118,42 @@ class OrderModel {
   final int? numberOfLoads;
   final bool soapDeducted;
   final DateTime? inventoryDeductedAt;
+
+  // ── Engagement fields (Promo + Membership + Loyalty) ──
+  /// Customer-requested promo code. Written at order creation; the server-side
+  /// `repriceVerifiedOrder` Cloud Function validates and applies the discount.
+  final String? requestedPromoCode;
+  /// Discount applied by the promo code (computed server-side after weight verification).
+  final double? promoDiscount;
+  /// Discount applied by the customer's active membership plan.
+  final double? membershipDiscount;
+  /// Server-computed full pricing breakdown: loadCount, laundrySubtotal,
+  /// membershipDiscount, promoDiscount, deliveryFee, total.
+  final Map<String, dynamic>? pricingBreakdownMap;
+  /// Set to true once the server has validated and applied engagement pricing.
+  final bool engagementPriceFinalized;
+  /// Actual amount already received from the customer (GCash verified amount
+  /// plus any balance collected at fulfillment).
+  final double amountPaid;
+  /// Final price computed server-side after weight verification.
+  final double? finalAmount;
+  /// Remaining amount owed (finalAmount - amountPaid when positive).
+  final double? balanceDue;
+  /// Overpayment to be refunded/credited (amountPaid - finalAmount when positive).
+  final double? refundAmount;
+  /// Whether the remaining balance has been collected at fulfillment.
+  final bool balanceSettled;
+  /// Whether an overpayment has been refunded/credited to the customer.
+  final bool refundSettled;
+  /// Timestamp when the order became eligible for processing (payment
+  /// condition + weight verification satisfied). This is the anchor for the
+  /// order-level laundry timer, replacing the old approval-based timing.
+  final DateTime? processingStartedAt;
+  /// Verified-weight-based subtotal (cycles × pricePerLoad), distinct from
+  /// [subtotal] which is the client-declared amount before verification.
+  final double? laundrySubtotal;
+  /// Loyalty points earned for this order (set by Cloud Function on completion).
+  final int? pointsEarned;
 
   OrderModel({
     required this.id,
@@ -124,6 +190,7 @@ class OrderModel {
     this.paymentStatus = 'Pending Verification',
     this.serviceType,
     this.deliveryMethod = 'Pickup',
+    this.fulfillmentMethod,
     this.deliveryAddress,
     this.customerLatitude,
     this.customerLongitude,
@@ -131,6 +198,10 @@ class OrderModel {
     this.notes,
     this.assignedTo,
     this.assignedDeliveryStaffId,
+    this.pickupStatus,
+    this.pickupStartedAt,
+    this.pickupCompletedAt,
+    this.pickupCollectedBy,
     this.collectedBy,
     this.collectedAt,
     this.receivedBy,
@@ -141,6 +212,14 @@ class OrderModel {
     this.cashReceivedBy,
     this.cashReceivedAt,
     this.rejectionReason,
+    this.remittanceStatus,
+    this.remittedBy,
+    this.remittedAt,
+    this.confirmedBy,
+    this.confirmedAt,
+    this.cancelledAt,
+    this.cancelledBy,
+    this.cancellationReason,
     DateTime? createdAt,
     this.updatedAt,
     this.completedAt,
@@ -154,6 +233,12 @@ class OrderModel {
     this.deliveryDeadlineAt,
     this.estimatedDuration,
     this.estimatedFinishTime,
+    this.fulfillmentRequestedAt,
+    this.pickupToken,
+    this.pickupCode,
+    this.pickupVerifiedAt,
+    this.pickupVerifiedBy,
+    this.pickupExpiresAt,
     this.assignedMachineId,
     this.assignedMachineType,
     this.assignedMachineNumber,
@@ -161,6 +246,20 @@ class OrderModel {
     this.numberOfLoads,
     this.soapDeducted = false,
     this.inventoryDeductedAt,
+    this.requestedPromoCode,
+    this.promoDiscount,
+    this.membershipDiscount,
+    this.pricingBreakdownMap,
+    this.engagementPriceFinalized = false,
+    this.laundrySubtotal,
+    this.pointsEarned,
+    this.amountPaid = 0,
+    this.finalAmount,
+    this.balanceDue,
+    this.refundAmount,
+    this.balanceSettled = false,
+    this.refundSettled = false,
+    this.processingStartedAt,
   }) : createdAt = createdAt ?? DateTime.now();
 
   Map<String, dynamic> toMap() {
@@ -199,6 +298,7 @@ class OrderModel {
       'paymentStatus': paymentStatus,
       'serviceType': serviceType,
       'deliveryMethod': deliveryMethod,
+      'fulfillmentMethod': fulfillmentMethod,
       'deliveryAddress': deliveryAddress?.toMap(),
       'customerLatitude': customerLatitude,
       'customerLongitude': customerLongitude,
@@ -206,6 +306,10 @@ class OrderModel {
       'notes': notes,
       'assignedTo': assignedTo,
       'assignedDeliveryStaffId': assignedDeliveryStaffId,
+      'pickupStatus': pickupStatus,
+      'pickupStartedAt': pickupStartedAt?.toIso8601String(),
+      'pickupCompletedAt': pickupCompletedAt?.toIso8601String(),
+      'pickupCollectedBy': pickupCollectedBy,
       'collectedBy': collectedBy,
       'collectedAt': collectedAt?.toIso8601String(),
       'receivedBy': receivedBy,
@@ -216,6 +320,14 @@ class OrderModel {
       'cashReceivedBy': cashReceivedBy,
       'cashReceivedAt': cashReceivedAt?.toIso8601String(),
       'rejectionReason': rejectionReason,
+      'remittanceStatus': remittanceStatus,
+      'remittedBy': remittedBy,
+      'remittedAt': remittedAt?.toIso8601String(),
+      'confirmedBy': confirmedBy,
+      'confirmedAt': confirmedAt?.toIso8601String(),
+      'cancelledAt': cancelledAt?.toIso8601String(),
+      'cancelledBy': cancelledBy,
+      'cancellationReason': cancellationReason,
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt?.toIso8601String(),
       'completedAt': completedAt?.toIso8601String(),
@@ -229,11 +341,31 @@ class OrderModel {
       'deliveryDeadlineAt': deliveryDeadlineAt?.toIso8601String(),
       'estimatedDuration': estimatedDuration,
       'estimatedFinishTime': estimatedFinishTime?.toIso8601String(),
+      'fulfillmentRequestedAt': fulfillmentRequestedAt?.toIso8601String(),
+      'pickupToken': pickupToken,
+      'pickupCode': pickupCode,
+      'pickupVerifiedAt': pickupVerifiedAt?.toIso8601String(),
+      'pickupVerifiedBy': pickupVerifiedBy,
+      'pickupExpiresAt': pickupExpiresAt?.toIso8601String(),
       'assignedMachineId': assignedMachineId,
       'assignedMachineType': assignedMachineType,
       'assignedMachineNumber': assignedMachineNumber,
       'machineHistory': machineHistory,
       'numberOfLoads': numberOfLoads,
+      'requestedPromoCode': requestedPromoCode,
+      'promoDiscount': promoDiscount,
+      'membershipDiscount': membershipDiscount,
+      'pricingBreakdown': pricingBreakdownMap,
+      'engagementPriceFinalized': engagementPriceFinalized,
+      'laundrySubtotal': laundrySubtotal,
+      'pointsEarned': pointsEarned,
+      'amountPaid': amountPaid,
+      'finalAmount': finalAmount,
+      'balanceDue': balanceDue,
+      'refundAmount': refundAmount,
+      'balanceSettled': balanceSettled,
+      'refundSettled': refundSettled,
+      'processingStartedAt': processingStartedAt?.toIso8601String(),
     };
   }
 
@@ -279,6 +411,7 @@ class OrderModel {
       paymentStatus: map['paymentStatus'] ?? 'Pending Verification',
       serviceType: map['serviceType'],
       deliveryMethod: map['deliveryMethod'] ?? 'Pickup',
+      fulfillmentMethod: map['fulfillmentMethod'],
       deliveryAddress: map['deliveryAddress'] != null
           ? AddressModel.fromMap(map['deliveryAddress'])
           : null,
@@ -288,6 +421,10 @@ class OrderModel {
       notes: map['notes'],
       assignedTo: map['assignedTo'],
       assignedDeliveryStaffId: map['assignedDeliveryStaffId'],
+      pickupStatus: map['pickupStatus'],
+      pickupStartedAt: _parseDate(map['pickupStartedAt']),
+      pickupCompletedAt: _parseDate(map['pickupCompletedAt']),
+      pickupCollectedBy: map['pickupCollectedBy'],
       collectedBy: map['collectedBy'],
       collectedAt: _parseDate(map['collectedAt']),
       receivedBy: map['receivedBy'],
@@ -298,6 +435,14 @@ class OrderModel {
       cashReceivedBy: map['cashReceivedBy'],
       cashReceivedAt: _parseDate(map['cashReceivedAt']),
       rejectionReason: map['rejectionReason'],
+      remittanceStatus: map['remittanceStatus'],
+      remittedBy: map['remittedBy'],
+      remittedAt: _parseDate(map['remittedAt']),
+      confirmedBy: map['confirmedBy'],
+      confirmedAt: _parseDate(map['confirmedAt']),
+      cancelledAt: _parseDate(map['cancelledAt']),
+      cancelledBy: map['cancelledBy'],
+      cancellationReason: map['cancellationReason'],
       createdAt: _parseDate(map['createdAt']) ?? DateTime.now(),
       updatedAt: _parseDate(map['updatedAt']),
       completedAt: _parseDate(map['completedAt']),
@@ -311,6 +456,12 @@ class OrderModel {
       deliveryDeadlineAt: _parseDate(map['deliveryDeadlineAt']),
       estimatedDuration: (map['estimatedDuration'] as num?)?.toInt(),
       estimatedFinishTime: _parseDate(map['estimatedFinishTime']),
+      fulfillmentRequestedAt: _parseDate(map['fulfillmentRequestedAt']),
+      pickupToken: map['pickupToken'],
+      pickupCode: map['pickupCode'],
+      pickupVerifiedAt: _parseDate(map['pickupVerifiedAt']),
+      pickupVerifiedBy: map['pickupVerifiedBy'],
+      pickupExpiresAt: _parseDate(map['pickupExpiresAt']),
       assignedMachineId: map['assignedMachineId'],
       assignedMachineType: map['assignedMachineType'],
       assignedMachineNumber: (map['assignedMachineNumber'] as num?)?.toInt(),
@@ -322,6 +473,20 @@ class OrderModel {
       numberOfLoads: (map['numberOfLoads'] as num?)?.toInt(),
       soapDeducted: map['soapDeducted'] ?? false,
       inventoryDeductedAt: _parseDate(map['inventoryDeductedAt']),
+      requestedPromoCode: map['requestedPromoCode'],
+      promoDiscount: (map['promoDiscount'] as num?)?.toDouble(),
+      membershipDiscount: (map['membershipDiscount'] as num?)?.toDouble(),
+      pricingBreakdownMap: (map['pricingBreakdown'] as Map<String, dynamic>?),
+      engagementPriceFinalized: map['engagementPriceFinalized'] ?? false,
+      laundrySubtotal: (map['laundrySubtotal'] as num?)?.toDouble(),
+      pointsEarned: (map['pointsEarned'] as num?)?.toInt(),
+      amountPaid: (map['amountPaid'] as num?)?.toDouble() ?? 0,
+      finalAmount: (map['finalAmount'] as num?)?.toDouble(),
+      balanceDue: (map['balanceDue'] as num?)?.toDouble(),
+      refundAmount: (map['refundAmount'] as num?)?.toDouble(),
+      balanceSettled: map['balanceSettled'] ?? false,
+      refundSettled: map['refundSettled'] ?? false,
+      processingStartedAt: _parseDate(map['processingStartedAt']),
     );
   }
 
@@ -335,6 +500,12 @@ class OrderModel {
           : null;
 
   double get displayedEstimatedWeight => estimatedWeight ?? weight;
+
+  /// Human-readable display ID (e.g. LT-2026-0001).
+  /// Falls back to a truncated Firestore key when the counter has not been
+  /// generated yet (legacy or walk-in orders).
+  String get displayNumber =>
+      transactionNumber ?? 'Transaction #${id.substring(0, 6).toUpperCase()}';
 
   /// Weight used for current laundry operations and staff display.
   /// The original declared/estimated weight remains available through
@@ -373,11 +544,39 @@ class OrderModel {
     return 'Cash at Shop';
   }
 
+  /// Whether the customer has chosen a fulfillment method.
+  bool get hasFulfillmentChoice => fulfillmentMethod != null && fulfillmentMethod!.isNotEmpty;
+
+  /// Whether customer chose personal pickup.
+  bool get isPersonalPickup => fulfillmentMethod == 'Personal Pickup';
+
+  /// Whether customer chose delivery.
+  bool get isDelivery => fulfillmentMethod == 'Delivery';
+
   /// Human-readable label for the payment status.
   String get paymentStatusDisplay {
     if (paymentStatus == 'Verified') return 'PAID';
     return paymentStatus;
   }
+
+  /// Remaining balance owed after the verified final amount, zero when none.
+  double get outstandingBalance {
+    final due = balanceDue ?? (finalAmount != null
+        ? (finalAmount! - amountPaid).clamp(0, double.infinity).toDouble()
+        : 0.0);
+    return due > 0 ? due : 0;
+  }
+
+  /// Overpayment awaiting refund/credit, zero when none.
+  double get pendingRefund => refundAmount != null && refundAmount! > 0
+      ? refundAmount!
+      : 0;
+
+  /// Whether the transaction is financially settled (no outstanding balance
+  /// owed, and any overpayment has been returned).
+  bool get isFinanciallySettled =>
+      outstandingBalance <= 0 &&
+      (pendingRefund <= 0 || refundSettled);
 
   /// Parses a date that may be a Firestore [Timestamp], a [DateTime], or an
   /// ISO-8601 [String]. Returns null when the value is null or unparseable.

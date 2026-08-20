@@ -34,7 +34,7 @@ class BusinessConfigurationScreen extends StatelessWidget {
               ),
               _toggle(
                 service,
-                'Real-Time Order Tracking',
+                'Real-Time Transaction Tracking',
                 'realTimeTrackingEnabled',
                 features.realTimeTrackingEnabled,
               ),

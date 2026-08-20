@@ -1,9 +1,18 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
+import '../../../config/app_config.dart';
+import '../../../core/utils/currency_helper.dart';
+import '../../../core/widgets/remittance_action.dart';
+import '../../../engines/order_scheduling_gate.dart';
 import '../../../providers/auth_provider.dart';
+import '../../../providers/order_provider.dart';
 import 'delivery_tasks_screen.dart';
 import 'delivery_history_screen.dart';
+import '../../../models/order_model.dart';
 import '../../../models/delivery_queue_entry_model.dart';
 import '../../../providers/delivery_provider.dart';
 
@@ -26,6 +35,28 @@ class DeliveryStaffHomeScreen extends StatefulWidget {
 
 class _DeliveryStaffHomeScreenState extends State<DeliveryStaffHomeScreen> {
   int _index = 0;
+  Timer? _reconcileTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    // Create/assign pickup queue entries for pickup orders that were placed
+    // without a backend (cloud function) trigger. Runs from this staff client,
+    // which has write access to `deliveryQueue`, then re-checks periodically so
+    // new customer orders are picked up even while this screen stays open.
+    final firestore = FirebaseFirestore.instance;
+    OrderSchedulingGate.reconcilePendingPickups(firestore);
+    _reconcileTimer = Timer.periodic(
+      const Duration(seconds: 60),
+      (_) => OrderSchedulingGate.reconcilePendingPickups(firestore),
+    );
+  }
+
+  @override
+  void dispose() {
+    _reconcileTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -169,6 +200,56 @@ class _DeliveryDashboard extends StatelessWidget {
                   ),
                 ),
               ),
+              const SizedBox(height: 16),
+              const Text(
+                'Cash Remittance',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              StreamBuilder<List<OrderModel>>(
+                stream: context
+                    .read<OrderProvider>()
+                    .streamPickupRemittances(currentStaffId ?? ''),
+                builder: (context, remitSnap) {
+                  // DEBUG-INSTRUMENTED (temporary): log every rebuild so we can
+                  // trace why a deleted order may keep rendering. Remove after
+                  // diagnosis.
+                  debugPrint(
+                    '[RemitUI] state=${remitSnap.connectionState} '
+                    'hasError=${remitSnap.hasError} '
+                    'error=${remitSnap.error} '
+                    'dataLen=${remitSnap.data?.length}',
+                  );
+                  final remittances = (remitSnap.data ?? [])
+                      .where(
+                        (o) =>
+                            AppConfig.isCashMethod(o.paymentMethod) &&
+                            o.paymentStatus == 'Verified' &&
+                            (o.remittanceStatus ?? '') != 'Remitted',
+                      )
+                      .toList();
+                  for (final order in remittances) {
+                    debugPrint(
+                      '[RemitUI] tile id=${order.id} '
+                      'display=${order.displayNumber} '
+                      'pay=${order.paymentStatus} '
+                      'remit=${order.remittanceStatus}',
+                    );
+                  }
+                  if (remittances.isEmpty) {
+                    return Text(
+                      'No cash to remit',
+                      style: TextStyle(color: Colors.grey.shade600),
+                    );
+                  }
+                  return Column(
+                    children: [
+                      for (final order in remittances)
+                        _RemittanceTile(order: order),
+                    ],
+                  );
+                },
+              ),
             ],
           ),
         );
@@ -194,6 +275,49 @@ class _DeliveryDashboard extends StatelessWidget {
               title,
               style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RemittanceTile extends StatelessWidget {
+  const _RemittanceTile({required this.order});
+
+  final OrderModel order;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    order.displayNumber,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                    ),
+                  ),
+                ),
+                Text(
+                  CurrencyHelper.formatSimple(order.totalAmount),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.primary,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            RemittanceAction(order: order),
           ],
         ),
       ),

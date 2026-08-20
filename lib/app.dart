@@ -9,8 +9,10 @@ import 'providers/delivery_provider.dart';
 import 'providers/soap_provider.dart';
 import 'providers/machine_provider.dart';
 import 'features/auth/screens/login_screen.dart';
+import 'features/auth/screens/splash_screen.dart';
 import 'features/auth/screens/register_step1_screen.dart';
 import 'features/auth/screens/register_step2_location_screen.dart';
+import 'features/auth/screens/location_setup_screen.dart';
 import 'features/auth/screens/forgot_password_screen.dart';
 import 'features/customer/screens/home_screen.dart';
 import 'features/customer/screens/create_order_screen.dart';
@@ -27,6 +29,7 @@ import 'features/staff/screens/laundry_task_screen.dart';
 import 'features/staff/screens/weight_verification_screen.dart';
 import 'features/staff/screens/machine_monitor_screen.dart';
 import 'features/staff/screens/delivery_queue_screen.dart';
+import 'features/staff/screens/pickup_verification_screen.dart';
 import 'features/staff/screens/delivery_staff_home_screen.dart';
 import 'features/admin/screens/admin_dashboard_screen.dart';
 import 'features/admin/screens/manage_orders_screen.dart';
@@ -74,6 +77,7 @@ class LaundryApp extends StatelessWidget {
     switch (settings.name) {
       // Auth Routes
       case '/':
+        return MaterialPageRoute(builder: (_) => const SplashScreen());
       case '/login':
         return MaterialPageRoute(builder: (_) => const LoginScreen());
       case '/register/step1':
@@ -86,6 +90,13 @@ class LaundryApp extends StatelessWidget {
             email: args['email'],
             password: args['password'],
             phone: args['phone'],
+          ),
+        );
+      case '/customer/location-setup':
+        final args = settings.arguments as Map<String, dynamic>?;
+        return MaterialPageRoute(
+          builder: (_) => LocationSetupScreen(
+            fromProfile: args?['fromProfile'] == true,
           ),
         );
       case '/forgot-password':
@@ -130,6 +141,8 @@ class LaundryApp extends StatelessWidget {
                 [],
             soapTotal: (args['soapTotal'] ?? 0).toDouble(),
             deliveryMethod: args['deliveryMethod'] ?? 'Pickup',
+            promoDiscount: (args['promoDiscount'] as num?)?.toDouble(),
+            promoCode: args['promoCode'] as String?,
           ),
         );
       case '/customer/gcash-payment':
@@ -179,6 +192,8 @@ class LaundryApp extends StatelessWidget {
         return MaterialPageRoute(builder: (_) => const MachineMonitorScreen());
       case '/staff/delivery-queue':
         return MaterialPageRoute(builder: (_) => const DeliveryQueueScreen());
+      case '/staff/pickup-verification':
+        return MaterialPageRoute(builder: (_) => const PickupVerificationScreen());
 
       // Admin Routes
       case '/admin/dashboard':

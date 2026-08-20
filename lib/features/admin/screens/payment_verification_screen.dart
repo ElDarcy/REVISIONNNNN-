@@ -1,10 +1,16 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/utils/currency_helper.dart';
+import '../../../models/payment_model.dart';
+import '../../../models/order_model.dart';
 import '../../../providers/payment_provider.dart';
 import '../../../providers/auth_provider.dart';
+import '../../../providers/order_provider.dart';
+import '../../../services/transaction_proof_service.dart';
 
 class PaymentVerificationScreen extends StatelessWidget {
   const PaymentVerificationScreen({super.key});
@@ -18,6 +24,34 @@ class PaymentVerificationScreen extends StatelessWidget {
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
+          }
+
+          if (snapshot.hasError) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.error_outline, size: 56, color: Colors.red),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Could not load pending payments',
+                    style: TextStyle(fontSize: 16),
+                  ),
+                  const SizedBox(height: 4),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Text(
+                      '${snapshot.error}',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
           }
 
           final payments = snapshot.data ?? [];
@@ -46,6 +80,8 @@ class PaymentVerificationScreen extends StatelessWidget {
             itemBuilder: (context, index) {
               final payment = payments[index];
               final receiptUrl = payment.receiptImageUrl ?? '';
+              final hasReceipt =
+                  receiptUrl.isNotEmpty || payment.receiptProofId != null;
               final dateFormatted = DateFormat(
                 'MMM dd, yyyy h:mm a',
               ).format(payment.createdAt);
@@ -80,12 +116,21 @@ class PaymentVerificationScreen extends StatelessWidget {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  'Transaction #${payment.orderId.substring(0, 8).toUpperCase()}',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                  ),
+                                FutureBuilder<OrderModel?>(
+                                  future: context
+                                      .read<OrderProvider>()
+                                      .getOrderById(payment.orderId),
+                                  builder: (context, snap) {
+                                    final order = snap.data;
+                                    return Text(
+                                      order?.displayNumber ??
+                                          'Transaction ${payment.orderId.substring(0, 8).toUpperCase()}',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 16,
+                                      ),
+                                    );
+                                  },
                                 ),
                                 const SizedBox(height: 2),
                                 Text(
@@ -161,15 +206,28 @@ class PaymentVerificationScreen extends StatelessWidget {
                           payment.referenceNumber!,
                         ),
                       if (payment.userId.isNotEmpty)
-                        _buildDetailRow(
-                          'User ID',
-                          payment.userId.length > 12
-                              ? '...${payment.userId.substring(payment.userId.length - 12)}'
-                              : payment.userId,
+                        FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                          future: FirebaseFirestore.instance
+                              .collection('users')
+                              .doc(payment.userId)
+                              .get(),
+                          builder: (context, userSnap) {
+                            final data = userSnap.data;
+                            final name =
+                                data != null ? (data['name'] ?? '') as String : '';
+                            return _buildDetailRow(
+                              'Customer',
+                              name.isNotEmpty
+                                  ? name
+                                  : payment.userId.length > 12
+                                      ? '...${payment.userId.substring(payment.userId.length - 12)}'
+                                      : payment.userId,
+                            );
+                          },
                         ),
 
                       // Receipt Image Section
-                      if (receiptUrl.isNotEmpty) ...[
+                      if (hasReceipt) ...[
                         const SizedBox(height: 12),
                         const Text(
                           'Receipt Screenshot',
@@ -180,12 +238,7 @@ class PaymentVerificationScreen extends StatelessWidget {
                         ),
                         const SizedBox(height: 8),
                         GestureDetector(
-                          onTap: () => _showReceiptPreview(
-                            context,
-                            receiptUrl,
-                            payment.referenceNumber ?? '',
-                            payment.amount,
-                          ),
+                          onTap: () => _showReceiptPreview(context, payment),
                           child: Container(
                             height: 160,
                             width: double.infinity,
@@ -195,53 +248,13 @@ class PaymentVerificationScreen extends StatelessWidget {
                             ),
                             child: ClipRRect(
                               borderRadius: BorderRadius.circular(10),
-                              child: Image.network(
-                                receiptUrl,
-                                fit: BoxFit.cover,
-                                loadingBuilder: (_, child, progress) {
-                                  if (progress == null) return child;
-                                  return Container(
-                                    color: Colors.grey.shade100,
-                                    child: const Center(
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
-                                    ),
-                                  );
-                                },
-                                errorBuilder: (_, __, ___) => Container(
-                                  color: Colors.grey.shade100,
-                                  child: const Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Icon(
-                                        Icons.broken_image,
-                                        color: Colors.grey,
-                                        size: 32,
-                                      ),
-                                      SizedBox(height: 4),
-                                      Text(
-                                        'Failed to load image',
-                                        style: TextStyle(
-                                          color: Colors.grey,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
+                              child: _ReceiptImage(payment: payment),
                             ),
                           ),
                         ),
                         const SizedBox(height: 4),
                         GestureDetector(
-                          onTap: () => _showReceiptPreview(
-                            context,
-                            receiptUrl,
-                            payment.referenceNumber ?? '',
-                            payment.amount,
-                          ),
+                          onTap: () => _showReceiptPreview(context, payment),
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
@@ -379,12 +392,9 @@ class PaymentVerificationScreen extends StatelessWidget {
     );
   }
 
-  void _showReceiptPreview(
-    BuildContext context,
-    String imageUrl,
-    String referenceNumber,
-    double amount,
-  ) {
+  void _showReceiptPreview(BuildContext context, PaymentModel payment) {
+    final referenceNumber = payment.referenceNumber ?? '';
+    final amount = payment.amount;
     showDialog(
       context: context,
       builder: (context) => Dialog(
@@ -426,30 +436,11 @@ class PaymentVerificationScreen extends StatelessWidget {
             ),
             // Image
             ClipRRect(
-              child: Image.network(
-                imageUrl,
-                fit: BoxFit.contain,
+              child: SizedBox(
                 width: double.infinity,
                 height: 300,
-                loadingBuilder: (_, child, progress) {
-                  if (progress == null) return child;
-                  return Container(
-                    height: 300,
-                    color: Colors.grey.shade100,
-                    child: const Center(child: CircularProgressIndicator()),
-                  );
-                },
-                errorBuilder: (_, __, ___) => Container(
-                  height: 300,
-                  color: Colors.grey.shade100,
-                  child: const Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.broken_image, size: 48, color: Colors.grey),
-                      SizedBox(height: 8),
-                      Text('Failed to load receipt image'),
-                    ],
-                  ),
+                child: InteractiveViewer(
+                  child: _ReceiptImage(payment: payment),
                 ),
               ),
             ),
@@ -490,6 +481,7 @@ class PaymentVerificationScreen extends StatelessWidget {
   }
 
   void _confirmApprove(BuildContext context, String paymentId) {
+    final screenContext = context;
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -504,9 +496,11 @@ class PaymentVerificationScreen extends StatelessWidget {
         content: const Text(
           'By approving this payment:\n'
           '- Payment status will be set to Verified\n'
-          '- Transaction status will be set to Payment Verified\n'
-          '- The automated scheduler will assign the least-used machine\n'
-          '- Laundry staff will start the cycle from the Laundry Tasks screen\n'
+          '- The transaction is accepted and the paid amount is recorded\n'
+          '- A laundry worker will be automatically assigned\n'
+          '- Processing starts once the verified weight is recorded\n'
+          '- Any balance due after weight verification is collected at '
+          'pickup/delivery\n'
           '\nProceed with approval?',
         ),
         actions: [
@@ -516,33 +510,41 @@ class PaymentVerificationScreen extends StatelessWidget {
           ),
           ElevatedButton(
             onPressed: () async {
-              final paymentProvider = context.read<PaymentProvider>();
-              final authProvider = context.read<AuthProvider>();
+              final paymentProvider =
+                  screenContext.read<PaymentProvider>();
+              final authProvider = screenContext.read<AuthProvider>();
               Navigator.pop(context);
-              
+
               final adminId = authProvider.user?.id ?? '';
               final success = await paymentProvider.verifyPayment(
-                paymentId, 
-                adminId, 
+                paymentId,
+                adminId,
                 approved: true,
               );
-              
-              if (!context.mounted) return;
-              if (success) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Row(
-                      children: [
-                        Icon(Icons.check_circle, color: Colors.white),
-                        SizedBox(width: 8),
-                        Text('Payment approved! Machine assigned.'),
-                      ],
-                    ),
-                    backgroundColor: Colors.green,
-                    duration: Duration(seconds: 3),
+
+              if (!screenContext.mounted) return;
+              ScaffoldMessenger.of(screenContext).showSnackBar(
+                SnackBar(
+                  content: Row(
+                    children: [
+                      Icon(
+                        success ? Icons.check_circle : Icons.error,
+                        color: Colors.white,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        success
+                            ? 'Payment approved! Machine assigned.'
+                            : (paymentProvider.error ??
+                                'Verification failed. Please try again.'),
+                      ),
+                    ],
                   ),
-                );
-              }
+                  backgroundColor:
+                      success ? Colors.green : AppColors.error,
+                  duration: const Duration(seconds: 3),
+                ),
+              );
             },
             style: ElevatedButton.styleFrom(backgroundColor: AppColors.success),
             child: const Text('Approve', style: TextStyle(color: Colors.white)),
@@ -554,6 +556,7 @@ class PaymentVerificationScreen extends StatelessWidget {
 
   void _showRejectDialog(BuildContext context, String paymentId) {
     final reasonController = TextEditingController();
+    final screenContext = context;
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -639,8 +642,8 @@ class PaymentVerificationScreen extends StatelessWidget {
                 return;
               }
               
-              final paymentProvider = context.read<PaymentProvider>();
-              final authProvider = context.read<AuthProvider>();
+              final paymentProvider = screenContext.read<PaymentProvider>();
+              final authProvider = screenContext.read<AuthProvider>();
               Navigator.pop(context);
               
               final adminId = authProvider.user?.id ?? '';
@@ -651,8 +654,8 @@ class PaymentVerificationScreen extends StatelessWidget {
                 rejectionReason: reason,
               );
               
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
+              if (screenContext.mounted) {
+                ScaffoldMessenger.of(screenContext).showSnackBar(
                   const SnackBar(
                     content: Row(
                       children: [
@@ -686,6 +689,92 @@ class PaymentVerificationScreen extends StatelessWidget {
       },
       padding: const EdgeInsets.symmetric(horizontal: 4),
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
+  }
+}
+
+/// Renders a payment receipt, preferring the new Base64 proof stored in
+/// `transaction_proofs`. Falls back to the legacy Firebase Storage URL.
+class _ReceiptImage extends StatelessWidget {
+  const _ReceiptImage({required this.payment});
+
+  final PaymentModel payment;
+
+  @override
+  Widget build(BuildContext context) {
+    final proofId = payment.receiptProofId;
+    final receiptUrl = payment.receiptImageUrl ?? '';
+
+    if (proofId != null && proofId.isNotEmpty) {
+      return FutureBuilder<Uint8List?>(
+        future: TransactionProofService().loadImageBytes(
+          proofId: proofId,
+          orderId: payment.orderId,
+        ),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return Container(
+              color: Colors.grey.shade100,
+              child: const Center(
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            );
+          }
+          final bytes = snapshot.data;
+          if (bytes == null || bytes.isEmpty) {
+            return Container(
+              color: Colors.grey.shade100,
+              child: const Center(
+                child: Text(
+                  'Receipt unavailable',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+              ),
+            );
+          }
+          return Image.memory(bytes, fit: BoxFit.cover);
+        },
+      );
+    }
+
+    if (receiptUrl.isNotEmpty) {
+      return Image.network(
+        receiptUrl,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) {
+          if (progress == null) return child;
+          return Container(
+            color: Colors.grey.shade100,
+            child: const Center(
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          );
+        },
+        errorBuilder: (_, __, ___) => Container(
+          color: Colors.grey.shade100,
+          child: const Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.broken_image, color: Colors.grey, size: 32),
+              SizedBox(height: 4),
+              Text(
+                'Failed to load image',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      color: Colors.grey.shade100,
+      child: const Center(
+        child: Text(
+          'No receipt',
+          style: TextStyle(color: Colors.grey, fontSize: 12),
+        ),
+      ),
     );
   }
 }

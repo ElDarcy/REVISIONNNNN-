@@ -8,6 +8,7 @@ class EngagementPricingEngine {
     required double actualWeight,
     required ServicePricing pricing,
     required double deliveryFee,
+    double soapTotal = 0,
     MembershipPlan? membership,
     Promotion? promo,
     bool membershipIsActive = true,
@@ -15,25 +16,25 @@ class EngagementPricingEngine {
     DateTime? now,
   }) {
     final loads = OrderLoadEngine.computeNumberOfLoads(actualWeight);
-    final double subtotal = loads * pricing.pricePerLoad;
+    final double laundrySubtotal = loads * pricing.pricePerLoad + soapTotal;
     final hasActiveMembership = membershipIsActive && membership?.status == 'Active';
     final double memberDiscount = !hasActiveMembership
         ? 0
-        : subtotal * membership!.discountPercent.clamp(0, 100) / 100;
+        : laundrySubtotal * membership!.discountPercent.clamp(0, 100) / 100;
     final double promoDiscount = promo == null ||
             !promo.isEligibleFor(
-              laundrySubtotal: subtotal,
+              laundrySubtotal: laundrySubtotal,
               hasActiveMembership: hasActiveMembership,
               now: now,
             )
         ? 0
-        : _promoDiscount(promo, subtotal);
+        : _promoDiscount(promo, laundrySubtotal);
     final usePromo = promoDiscount > 0 &&
         (allowDiscountStacking || promoDiscount > memberDiscount);
     // One discount only unless the explicit feature rule permits stacking.
     return PricingBreakdown(
       loadCount: loads,
-      laundrySubtotal: subtotal,
+      laundrySubtotal: laundrySubtotal,
       membershipDiscount: allowDiscountStacking || !usePromo ? memberDiscount : 0,
       promoDiscount: usePromo ? promoDiscount : 0,
       deliveryFee: deliveryFee,

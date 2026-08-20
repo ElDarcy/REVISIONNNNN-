@@ -97,9 +97,11 @@ class OrderLoadEngine {
         .get();
     if (existing.docs.isNotEmpty) {
       return existing.docs.map((doc) => doc.id).toList()..sort((a, b) {
-        final an = (a).length;
-        final bn = (b).length;
-        return an.compareTo(bn);
+        final aData = existing.docs.firstWhere((d) => d.id == a).data();
+        final bData = existing.docs.firstWhere((d) => d.id == b).data();
+        final aNum = (aData['loadNumber'] ?? 0) as int;
+        final bNum = (bData['loadNumber'] ?? 0) as int;
+        return aNum.compareTo(bNum);
       });
     }
 
@@ -154,7 +156,8 @@ class OrderLoadEngine {
     for (final load in loads) {
       final isCompleted =
           load.status == LaundryStatus.completed ||
-          load.status == LaundryStatus.delivered;
+          load.status == LaundryStatus.delivered ||
+          load.status == LaundryStatus.pickedUp;
       if (!isCompleted) {
         allCompleted = false;
         final idx = flow.indexOf(load.status.value);

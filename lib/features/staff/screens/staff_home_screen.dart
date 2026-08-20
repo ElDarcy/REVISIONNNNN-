@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_constants.dart';
+import '../../../config/app_config.dart';
+import '../../../core/utils/formatters.dart';
 import '../../../providers/auth_provider.dart';
 import '../../../providers/order_provider.dart';
 import '../../../providers/machine_provider.dart';
@@ -10,8 +12,9 @@ import '../../../engines/order_status_flow_engine.dart';
 import '../../../models/order_model.dart';
 import '../../../models/order_load_model.dart';
 import '../../../models/laundry_status_model.dart';
-import 'laundry_task_screen.dart';
+
 import 'machine_monitor_screen.dart';
+import 'pickup_verification_screen.dart';
 
 /// Laundry Staff home with bottom navigation.
 ///
@@ -143,22 +146,25 @@ class _LaundryTasksListBody extends StatelessWidget {
 
             final activeOrders = <OrderModel>[];
             final completedOrders = <OrderModel>[];
+            final weightVerificationNeeded = <OrderModel>[];
+            final awaitingGcashPayment = <OrderModel>[];
             for (final order in myOrders) {
-              final loads = groupedLoads[order.id] ?? const <OrderLoadModel>[];
-              final allLoadsFinished =
-                  loads.isNotEmpty && loads.every((load) => load.status.isFinished);
-              final readyForFulfilment = order.status == LaundryStatus.readyForPickup ||
+              if (order.weightStatus == 'pending') {
+                weightVerificationNeeded.add(order);
+              }
+              if (order.paymentMethod == 'GCash' &&
+                  order.paymentStatus == 'Pending Verification' &&
+                  order.weightStatus == 'verified' &&
+                  !order.status.isFinished) {
+                awaitingGcashPayment.add(order);
+              }
+              final isTerminal = order.status == LaundryStatus.readyForPickup ||
                   order.status == LaundryStatus.readyForDelivery ||
                   order.status == LaundryStatus.outForDelivery ||
                   order.status.isFinished;
-
-              // Ready is the hand-off to the customer/delivery workflow, not
-              // an active Laundry Staff task. A completed set of loads remains
-              // visible once, in history.
-              if (allLoadsFinished && readyForFulfilment) {
+              if (isTerminal) {
                 completedOrders.add(order);
-              } else if (!readyForFulfilment ||
-                  loads.any((load) => !load.status.isFinished)) {
+              } else {
                 activeOrders.add(order);
               }
             }
@@ -169,15 +175,15 @@ class _LaundryTasksListBody extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(Icons.check_circle, size: 64, color: Colors.green),
-                    const SizedBox(height: 16),
-                    const Text(
+                    SizedBox(height: 16),
+                    Text(
                       'All laundry tasks completed!',
                       style: TextStyle(fontSize: 18),
                     ),
-                  ],
-                ),
-              );
-            }
+        ],
+      ),
+    );
+  }
 
             activeOrders.sort((a, b) => b.createdAt.compareTo(a.createdAt));
             completedOrders.sort((a, b) => b.createdAt.compareTo(a.createdAt));
@@ -185,30 +191,130 @@ class _LaundryTasksListBody extends StatelessWidget {
             return ListView(
               padding: const EdgeInsets.all(12),
               children: [
-                const Text('Active Tasks', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                if (activeOrders.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.only(bottom: 16),
-                    child: Text('No active laundry tasks.'),
+                // BUG FIX: Prominent weight verification section at the top
+                if (weightVerificationNeeded.isNotEmpty) ...[
+                  Material(
+                    type: MaterialType.transparency,
+                    child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: AppColors.warning.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: AppColors.warning,
+                        width: 2,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.monitor_weight,
+                              color: AppColors.warning,
+                              size: 24,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'WEIGHT VERIFICATION NEEDED (${weightVerificationNeeded.length})',
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.warning,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        ...weightVerificationNeeded.map((order) => Material(
+                          type: MaterialType.transparency,
+                          child: ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(
+                              order.displayNumber,
+                              style: const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            subtitle: Text('${order.operationalWeight}kg · ${order.customerName ?? "Customer"}'),
+                            trailing: const Icon(Icons.chevron_right),
+                            onTap: () => Navigator.pushNamed(
+                              context,
+                              '/staff/weight-verification',
+                              arguments: {'orderId': order.id},
+                            ),
+                          ),
+                        )),
+                      ],
+                    ),
                   ),
-                ...activeOrders.map((order) {
-                  final loads = (groupedLoads[order.id] ?? [])
-                      .where((load) => !load.status.isFinished)
-                      .toList()
-                    ..sort((a, b) => a.loadNumber.compareTo(b.loadNumber));
-                  return _OrderGroupCard(order: order, loads: loads, machineProvider: machineProvider);
-                }),
-                const SizedBox(height: 12),
-                const Text('Completed Tasks', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                if (completedOrders.isEmpty)
-                  const Text('No completed laundry tasks.'),
-                ...completedOrders.map((order) {
-                  final loads = List<OrderLoadModel>.from(groupedLoads[order.id] ?? [])
-                    ..sort((a, b) => a.loadNumber.compareTo(b.loadNumber));
-                  return _OrderGroupCard(order: order, loads: loads, machineProvider: machineProvider);
-                }),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+                // Orders weight-verified but held for GCash payment verification.
+                if (awaitingGcashPayment.isNotEmpty) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.info_outline, color: AppColors.primary, size: 18),
+                            const SizedBox(width: 6),
+                            Text(
+                              'AWAITING GCASH PAYMENT VERIFICATION (${awaitingGcashPayment.length})',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.primary,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        ...awaitingGcashPayment.map(
+                          (order) => Text(
+                            '${order.displayNumber} — ${order.customerName ?? "Customer"}',
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                if (activeOrders.isNotEmpty) ...[
+                  const Text('Active Tasks', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  ...activeOrders.map((order) {
+                    final loads = (groupedLoads[order.id] ?? [])
+                        .where((load) => !load.status.isFinished)
+                        .toList()
+                      ..sort((a, b) => a.loadNumber.compareTo(b.loadNumber));
+                    return _OrderGroupCard(order: order, loads: loads, machineProvider: machineProvider);
+                  }),
+                  const SizedBox(height: 12),
+                ],
+                if (completedOrders.isNotEmpty) ...[
+                  const Text('Completed Tasks', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  ...completedOrders.map((order) {
+                    final loads = List<OrderLoadModel>.from(groupedLoads[order.id] ?? [])
+                      ..sort((a, b) => a.loadNumber.compareTo(b.loadNumber));
+                    return _OrderGroupCard(order: order, loads: loads, machineProvider: machineProvider);
+                  }),
+                ],
+                if (activeOrders.isEmpty && completedOrders.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Text('No tasks assigned to you yet.', style: TextStyle(color: Colors.grey)),
+                  ),
               ],
             );
           },
@@ -231,12 +337,171 @@ class _OrderGroupCard extends StatelessWidget {
 
   String _customerLabel() {
     final name = order.customerName?.trim();
-    if (name != null && name.isNotEmpty) return name;
-    return order.orderType == 'online' ? 'Online Customer' : 'Walk-in Customer';
+    if (name != null && name.isNotEmpty) return Formatters.toTitleCase(name);
+    // BUG FIX: Never default online orders to "Walk-in Customer"
+    if (order.orderType == 'walk_in') return 'Walk-in Customer';
+    if (order.orderType == 'online') return 'Online Customer';
+    return 'Customer';
   }
 
-  @override
+  void _confirmCashCollection(BuildContext context) {
+    final amount = order.totalAmount;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Row(
+          children: [
+            Icon(Icons.payments_outlined, color: AppColors.success, size: 28),
+            SizedBox(width: 8),
+            Text('Collect Cash'),
+          ],
+        ),
+        content: Text(
+          'Collect ₱${amount.toStringAsFixed(2)} cash from customer?',
+          style: const TextStyle(fontSize: 15),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final staffId = context.read<AuthProvider>().user?.id ?? '';
+              final success = await context.read<OrderProvider>().collectCashPayment(
+                orderId: order.id,
+                staffId: staffId,
+                amount: amount,
+              );
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      success ? 'Cash collected successfully!' : 'Failed to record cash collection.',
+                    ),
+                    backgroundColor: success ? AppColors.success : AppColors.error,
+                  ),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.success),
+            child: const Text('Confirm Collection', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmDropOffCashCollection(BuildContext context) {
+    final amount = order.totalAmount;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Row(
+          children: [
+            Icon(Icons.payments_outlined, color: AppColors.success, size: 28),
+            SizedBox(width: 8),
+            Text('Collect Cash at Drop-off'),
+          ],
+        ),
+        content: Text(
+          'Collect ₱${amount.toStringAsFixed(2)} cash from the customer '
+          'while their laundry is dropped off at the shop?',
+          style: const TextStyle(fontSize: 15),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final staffId = ctx.read<AuthProvider>().user?.id ?? '';
+              final success =
+                  await ctx.read<OrderProvider>().collectCashPayment(
+                        orderId: order.id,
+                        staffId: staffId,
+                        amount: amount,
+                      );
+              if (ctx.mounted) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      success
+                          ? 'Cash collected. Remember to remit it to the admin.'
+                          : 'Failed to record cash collection.',
+                    ),
+                    backgroundColor: success
+                        ? AppColors.success
+                        : AppColors.error,
+                  ),
+                );
+              }
+              // Whoever collects the cash must be the one to remit it.
+              if (success && ctx.mounted) {
+                final remit = await showDialog<bool>(
+                  context: ctx,
+                  builder: (ctx2) => AlertDialog(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    title: const Row(
+                      children: [
+                        Icon(Icons.account_balance,
+                            color: AppColors.warning, size: 28),
+                        SizedBox(width: 8),
+                        Text('Remit Cash'),
+                      ],
+                    ),
+                    content: Text(
+                      'Confirm you have physically handed over '
+                      '₱${amount.toStringAsFixed(2)} cash to the admin?',
+                      style: const TextStyle(fontSize: 15),
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx2, false),
+                        child: const Text('Later'),
+                      ),
+                      ElevatedButton(
+                        onPressed: () => Navigator.pop(ctx2, true),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.warning,
+                        ),
+                        child: const Text(
+                          'Confirm Remittance',
+                          style: TextStyle(color: Colors.white),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+                if (remit == true && ctx.mounted) {
+                  final staffId = ctx.read<AuthProvider>().user?.id ?? '';
+                  await ctx.read<OrderProvider>().remitCash(
+                        orderId: order.id,
+                        staffId: staffId,
+                      );
+                }
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.success),
+            child: const Text('Confirm Collection', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+@override
   Widget build(BuildContext context) {
+    final currentUserId = context.read<AuthProvider>().user?.id ?? '';
+    final isCollector = (order.pickupCollectedBy ?? order.cashCollectedBy) ==
+        currentUserId;
     return Card(
       margin: const EdgeInsets.only(bottom: 16),
       elevation: 2,
@@ -260,7 +525,7 @@ class _OrderGroupCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        order.transactionNumber ?? 'Order #${order.id.substring(0, 6).toUpperCase()}',
+                        order.displayNumber,
                         style: const TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 16,
@@ -306,7 +571,7 @@ class _OrderGroupCard extends StatelessWidget {
               ],
             ),
           ),
-          if (order.weightStatus == 'pending' || order.weightStatus == 'rejected')
+          if (order.weightStatus == 'pending')
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: SizedBox(
@@ -326,20 +591,161 @@ class _OrderGroupCard extends StatelessWidget {
                 ),
               ),
             ),
+          if (order.deliveryMethod != 'Pickup' &&
+              AppConfig.isCashMethod(order.paymentMethod) &&
+              order.paymentStatus == 'Pending Collection' &&
+              order.remittanceStatus != 'Remitted')
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () => _confirmDropOffCashCollection(context),
+                  icon: const Icon(Icons.payments_outlined),
+                  label: const Text('Collect Cash at Drop-off'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.success,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          if (order.paymentMethod != 'GCash' &&
+              order.paymentStatus == 'Pending Collection' &&
+              (order.status == LaundryStatus.readyForPickup ||
+               order.status == LaundryStatus.readyForDelivery ||
+               order.status == LaundryStatus.outForDelivery))
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () => _confirmCashCollection(context),
+                  icon: const Icon(Icons.payments_outlined),
+                  label: const Text('Collect Cash'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.success,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          if (order.paymentMethod != 'GCash' &&
+              order.paymentStatus == 'Verified' &&
+              isCollector &&
+              (order.remittanceStatus == null || order.remittanceStatus == ''))
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () => _confirmRemitCash(context),
+                  icon: const Icon(Icons.account_balance, size: 18),
+                  label: const Text('Remit Cash to Admin'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.warning,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          if (order.paymentMethod != 'GCash' &&
+              order.paymentStatus == 'Verified' &&
+              order.remittanceStatus == 'Pending Remittance')
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppColors.warning.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppColors.warning.withValues(alpha: 0.3)),
+                ),
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.hourglass_top, size: 16, color: AppColors.warning),
+                    SizedBox(width: 6),
+                    Text(
+                      'Pending Admin Confirmation',
+                      style: TextStyle(color: AppColors.warning, fontWeight: FontWeight.w600, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           const Divider(height: 0),
           // Individual Loads List
-          ListView.separated(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: loads.length,
-            separatorBuilder: (_, _) => const Divider(height: 1),
-            itemBuilder: (context, index) {
-              final load = loads[index];
-              return _LoadItemTile(
-                load: load,
-                machineProvider: machineProvider,
+          StreamBuilder<Map<String, int>>(
+            stream: context.read<OrderProvider>().streamQueuePositions(),
+            builder: (context, queueSnap) {
+              final queuePositions = queueSnap.data ?? {};
+              return ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: loads.length,
+                separatorBuilder: (_, _) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final load = loads[index];
+                  return _LoadItemTile(
+                    load: load,
+                    machineProvider: machineProvider,
+                    machineHistory: order.machineHistory,
+                    queuePosition: queuePositions[load.id],
+                  );
+                },
               );
             },
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmRemitCash(BuildContext context) {
+    final amount = order.totalAmount;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Row(
+          children: [
+            Icon(Icons.account_balance, color: AppColors.warning, size: 28),
+            SizedBox(width: 8),
+            Text('Remit Cash'),
+          ],
+        ),
+        content: Text(
+          'Confirm you have physically handed over ₱${amount.toStringAsFixed(2)} cash to the admin?',
+          style: const TextStyle(fontSize: 15),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final staffId = ctx.read<AuthProvider>().user?.id ?? '';
+              final success = await ctx.read<OrderProvider>().remitCash(
+                orderId: order.id,
+                staffId: staffId,
+              );
+              if (ctx.mounted) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      success ? 'Cash remitted! Awaiting admin confirmation.' : 'Failed to remit cash.',
+                    ),
+                    backgroundColor: success ? AppColors.warning : AppColors.error,
+                  ),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.warning),
+            child: const Text('Confirm Remittance', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
@@ -350,8 +756,15 @@ class _OrderGroupCard extends StatelessWidget {
 class _LoadItemTile extends StatefulWidget {
   final OrderLoadModel load;
   final MachineProvider machineProvider;
+  final List<Map<String, dynamic>> machineHistory;
+  final int? queuePosition;
 
-  const _LoadItemTile({required this.load, required this.machineProvider});
+  const _LoadItemTile({
+    required this.load,
+    required this.machineProvider,
+    this.machineHistory = const [],
+    this.queuePosition,
+  });
 
   @override
   State<_LoadItemTile> createState() => _LoadItemTileState();
@@ -434,19 +847,48 @@ class _LoadItemTileState extends State<_LoadItemTile> {
   Widget _buildMachineInfo(OrderLoadModel load) {
     final washer = load.assignedWasherId;
     final dryer = load.assignedDryerId;
-    
-    if (washer == null && dryer == null) {
-      return const Text('Machine: Not Assigned', style: TextStyle(fontSize: 12, color: Colors.grey));
+
+    // Machine still assigned — show live IDs
+    if (washer != null || dryer != null) {
+      final parts = <String>[];
+      if (washer != null) parts.add('Washer: ${_machineLabel(washer)}');
+      if (dryer != null) parts.add('Dryer: ${_machineLabel(dryer)}');
+      return Text(parts.join(' · '),
+          style: const TextStyle(fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.w500));
     }
-    
-    final parts = <String>[];
-    if (washer != null) parts.add('Washer: $washer');
-    if (dryer != null) parts.add('Dryer: $dryer');
-    
-    return Text(
-      parts.join(' · '),
-      style: const TextStyle(fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.w500),
-    );
+
+    // Load is finished — look up from order's machineHistory
+    if (load.status.isFinished && widget.machineHistory.isNotEmpty) {
+      final washEntries = widget.machineHistory.where((h) => h['type'] == 'wash').toList();
+      final dryEntries = widget.machineHistory.where((h) => h['type'] == 'dry').toList();
+      final parts = <String>[];
+      if (washEntries.isNotEmpty) {
+        final idx = (load.loadNumber - 1).clamp(0, washEntries.length - 1);
+        parts.add(washEntries[idx]['label']?.toString() ?? 'Washer');
+      }
+      if (dryEntries.isNotEmpty) {
+        final dryIdx = (load.loadNumber - 1).clamp(0, dryEntries.length - 1);
+        parts.add(dryEntries[dryIdx]['label']?.toString() ?? 'Dryer');
+      }
+      if (parts.isNotEmpty) {
+        return Text(parts.join(' · '),
+            style: const TextStyle(fontSize: 12, color: AppColors.textSecondary, fontWeight: FontWeight.w500));
+      }
+    }
+
+    return const Text('Machine: Not Assigned',
+        style: TextStyle(fontSize: 12, color: Colors.grey));
+  }
+
+  /// Convert raw machine ID like 'wash_03' to 'Washer #3'.
+  static String _machineLabel(String id) {
+    final parts = id.split('_');
+    if (parts.length == 2) {
+      final type = parts[0] == 'wash' ? 'Washer' : 'Dryer';
+      final num = int.tryParse(parts[1]);
+      return num != null ? '$type #$num' : id;
+    }
+    return id;
   }
 
   Widget _buildStatusAndTimer(OrderLoadModel load) {
@@ -471,13 +913,37 @@ class _LoadItemTileState extends State<_LoadItemTile> {
       }
     }
     
-    return Text(
-      'Status: $statusValue$timerText',
-      style: TextStyle(
-        fontSize: 12, 
-        color: _statusColor(statusValue),
-        fontWeight: FontWeight.w600,
-      ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Status: $statusValue$timerText',
+          style: TextStyle(
+            fontSize: 12, 
+            color: _statusColor(statusValue),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        if (widget.queuePosition != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: AppColors.warning.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                'Queue Position #${widget.queuePosition}',
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.warning,
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 
@@ -485,26 +951,17 @@ class _LoadItemTileState extends State<_LoadItemTile> {
     final status = load.status;
     final serviceType = load.serviceType;
     
-    // Logic mapping matching the instructions
-    if (status == LaundryStatus.paymentVerified || 
-        status == LaundryStatus.waitingForMachine || 
-        status == LaundryStatus.waitingForDryer) {
-      String label = "Waiting...";
-      if (status == LaundryStatus.waitingForMachine) label = "Wait Washer";
-      if (status == LaundryStatus.waitingForDryer) label = "Wait Dryer";
-      
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          color: Colors.grey.shade100,
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: Colors.grey.shade300),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(color: Colors.grey.shade600, fontSize: 12, fontWeight: FontWeight.bold),
-        ),
-      );
+    // Waiting states are real: the load has NO machine until Machine Assigned.
+    // The scheduler enforces this invariant (waiting load == no reserved
+    // machine), so there are no safety-net buttons that pretend otherwise.
+    if (status == LaundryStatus.waitingForMachine) {
+      return _waitingLabel("Wait Washer");
+    }
+    if (status == LaundryStatus.waitingForDryer) {
+      return _waitingLabel("Wait Dryer");
+    }
+    if (status == LaundryStatus.paymentVerified) {
+      return _waitingLabel("Waiting...");
     }
 
     if (status == LaundryStatus.machineAssigned) {
@@ -606,6 +1063,21 @@ class _LoadItemTileState extends State<_LoadItemTile> {
     }
   }
 
+  Widget _waitingLabel(String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(color: Colors.grey.shade600, fontSize: 12, fontWeight: FontWeight.bold),
+      ),
+    );
+  }
+
   Color _statusColor(String status) {
     switch (status) {
       case 'Waiting for Machine':
@@ -634,7 +1106,7 @@ class _LaundryDashboardTab extends StatelessWidget {
 
     if (currentUser == null) return const Center(child: CircularProgressIndicator());
 
-    return StreamBuilder<List<OrderModel>>(
+      return StreamBuilder<List<OrderModel>>(
       stream: orderProvider.streamStaffOrders(currentUser.id),
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
@@ -659,7 +1131,13 @@ class _LaundryDashboardTab extends StatelessWidget {
 
         final completed = orders.where((o) => 
             o.status == LaundryStatus.completed || 
-            o.status == LaundryStatus.delivered
+            o.status == LaundryStatus.delivered ||
+            o.status == LaundryStatus.pickedUp
+        ).length;
+
+        // Count orders needing weight verification (pending only)
+        final needsWeightVerification = orders.where((o) =>
+            o.weightStatus == 'pending'
         ).length;
 
         return Padding(
@@ -694,6 +1172,31 @@ class _LaundryDashboardTab extends StatelessWidget {
                   ),
                 ],
               ),
+              if (needsWeightVerification > 0) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.warning.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.warning, width: 2),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.monitor_weight, color: AppColors.warning),
+                      const SizedBox(width: 8),
+                      Text(
+                        '$needsWeightVerification transaction(s) need weight verification',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.warning,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 24),
               const Text(
                 'Laundry Operations',
@@ -726,6 +1229,22 @@ class _LaundryDashboardTab extends StatelessWidget {
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (_) => const MachineMonitorScreen(),
+                    ),
+                  ),
+                ),
+              ),
+              Card(
+                child: ListTile(
+                  leading: const CircleAvatar(
+                    backgroundColor: AppColors.success,
+                    child: Icon(Icons.qr_code_scanner, color: Colors.white),
+                  ),
+                  title: const Text('Verify Pickup'),
+                  subtitle: const Text('Scan QR or enter code to release transaction'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const PickupVerificationScreen(),
                     ),
                   ),
                 ),

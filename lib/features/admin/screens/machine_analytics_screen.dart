@@ -402,7 +402,7 @@ class _MachineAnalyticsScreenState extends State<MachineAnalyticsScreen> {
                 m.isMaintenance
                     ? '${m.usageCount} uses — Maintenance'
                     : m.currentOrderId != null
-                    ? '${m.usageCount} uses — Order '
+                    ? '${m.usageCount} uses — Transaction '
                           '#${m.currentOrderId!.substring(0, 6).toUpperCase()}'
                     : '${m.usageCount} uses — Available',
               ),

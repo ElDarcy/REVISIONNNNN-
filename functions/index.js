@@ -1,3 +1,33 @@
+/**
+ * DORMANT SOURCE — NOT DEPLOYED.
+ *
+ * These Cloud Functions are intentionally NOT deployed: the Firebase project
+ * `laundrycaps2` is on the free Spark plan, which does not support Cloud
+ * Functions (they require the paid Blaze plan). Deployment is blocked.
+ *
+ * The core laundry workflow does NOT depend on any of these functions:
+ *   - Order scheduling/processing is driven entirely client-side by
+ *     OrderSchedulingGate (lib/engines/order_scheduling_gate.dart).
+ *   - Pickup auto-assignment no longer relies on the `autoAssignPickupTask` /
+ *     `autoAssignDeliveryQueueEntry` triggers. The Admin Flutter Web app is the
+ *     primary reconciler (PickupReconciliationService + reconcilePendingPickups)
+ *     and the Delivery Staff app is a secondary safety net; the assignment is
+ *     performed inside a Firestore transaction for idempotency.
+ *
+ * These functions are kept as dormant source because the app UI still
+ * references them for features that are currently non-functional in production:
+ *   - publicTrack             → receipt QR tracking URL (lib/services/receipt_service.dart)
+ *   - redeemPromotionRequest  → promo redemption requests (lib/services/engagement_customer_service.dart)
+ *   - redeemLoyaltyRewardRequest → loyalty reward redemption requests (same)
+ *   - repriceVerifiedOrder    → authoritative discount/weight reprice (lib/models/order_model.dart)
+ *   - monitorMembershipExpirations / awardLoyaltyOnCompletion /
+ *     reverseLoyaltyOnCancellation / monitorLaundryCycles → membership & loyalty
+ *     maintenance and machine-cycle monitoring.
+ *
+ * Do NOT delete or modify these implementations unless the features above are
+ * explicitly audited and restored/deployed (Blaze upgrade) or replaced.
+ */
+
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 admin.initializeApp();
@@ -9,6 +39,28 @@ const ACTIVE_DELIVERY_STATUSES = new Set([
     'Pending Pickup', 'Pickup Assigned', 'Pending Delivery', 'Assigned', 'Out for Delivery',
 ]);
 
+function isCashMethod(method) {
+    return method === 'Cash on Pickup' || method === 'Cash at Shop' || method === 'Cash on Drop off';
+}
+
+// Pickup orders are NOT ready for a laundry worker until their laundry is
+// physically at the shop, and cash pickup orders only after the collected cash
+// has been remitted and confirmed by the admin (strict cash handover gate).
+// Drop-off cash orders get a counter worker on 'Pending Collection' so they can
+// collect the cash at the counter; they proceed on 'Verified' without waiting
+// on remittance.
+function laundryAssignmentReady(order) {
+    const isPickup = order.deliveryMethod === 'Pickup';
+    const cash = isCashMethod(order.paymentMethod);
+    if (isPickup) {
+        if (order.pickupStatus !== 'Laundry Collected') return false;
+        if (cash && order.remittanceStatus !== 'Remitted') return false;
+        return order.paymentStatus === 'Verified';
+    }
+    if (order.paymentStatus === 'Verified') return true;
+    return cash && order.paymentStatus === 'Pending Collection';
+}
+
 // Payment verification is a server-side business transition.  The selected
 // laundry worker is deterministic: lowest active workload, then longest idle,
 // then lowest uid.  A transaction preserves an emergency manual reassignment.
@@ -17,7 +69,7 @@ exports.autoAssignLaundryAfterPayment = functions.firestore
     .onWrite(async (change, context) => {
         if (!change.after.exists) return null;
         const order = change.after.data();
-        if (order.paymentStatus !== 'Verified' || hasLaundryStaff(order)) return null;
+        if (!laundryAssignmentReady(order) || hasLaundryStaff(order)) return null;
 
         const [usersSnap, ordersSnap] = await Promise.all([
             db.collection('users').get(),
@@ -31,7 +83,7 @@ exports.autoAssignLaundryAfterPayment = functions.firestore
 
         const assigned = await db.runTransaction(async transaction => {
             const latest = await transaction.get(change.after.ref);
-            if (!latest.exists || latest.data().paymentStatus !== 'Verified' || hasLaundryStaff(latest.data())) return false;
+            if (!latest.exists || !laundryAssignmentReady(latest.data()) || hasLaundryStaff(latest.data())) return false;
             transaction.update(change.after.ref, {
                 assignedTo: selected,
                 assignedStaffId: selected,
@@ -43,18 +95,69 @@ exports.autoAssignLaundryAfterPayment = functions.firestore
             return true;
         });
         if (assigned) {
-            await deliverNotification(selected, 'Laundry task assigned', `You were automatically assigned order ${context.params.orderId.substring(0, 6).toUpperCase()}.`, 'operational', context.params.orderId);
+            await deliverNotification(selected, 'Laundry task assigned', `You were automatically assigned transaction ${context.params.orderId.substring(0, 6).toUpperCase()}.`, 'operational', context.params.orderId);
         }
         return null;
     });
 
+// Pickup orders need a delivery worker for the pickup leg.  Creating the queue
+// entry here (server-side) guarantees it happens even when the client app
+// lacks permission to read the staff roster; the deliveryQueue onCreate
+// trigger then assigns the least-loaded delivery worker.
+exports.autoAssignPickupTask = functions.firestore
+    .document('orders/{orderId}')
+    .onWrite(async (change, context) => {
+        if (!change.after.exists) return null;
+        const order = change.after.data();
+        if (order.deliveryMethod !== 'Pickup') return null;
+        if (order.pickupStatus === 'Laundry Collected') return null;
+
+        const queueRef = db.collection('deliveryQueue').doc(`${context.params.orderId}__pickup`);
+        const existing = await queueRef.get();
+        if (existing.exists) return null;
+
+        await queueRef.set({
+            orderId: context.params.orderId,
+            customerId: order.userId || order.customerId || null,
+            customerName: order.customerName || null,
+            type: 'pickup',
+            address: extractAddress(order.deliveryAddress),
+            latitude: Number(order.customerLatitude || 0),
+            longitude: Number(order.customerLongitude || 0),
+            distanceKm: Number(order.distanceKm || 0),
+            priorityScore: 50,
+            status: 'Pending Pickup',
+            assignedTo: null,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        return null;
+    });
+
+function extractAddress(address) {
+    if (!address) return null;
+    if (typeof address === 'string') return address;
+    if (typeof address === 'object') return address.fullAddress || address.street || null;
+    return null;
+}
+
 // Every pickup or delivery queue entry gets one delivery worker.  Queue docs
-// use orderId as their ID, so this also covers customer requests and the
-// deadline job without ever duplicating a task.
+// use orderId as their ID (with a `__pickup` suffix for pickup-leg entries),
+// so this also covers customer requests and the deadline job without ever
+// duplicating a task.  Pickup entries carry their own orderId field, so the
+// real order id is derived from that when the doc id is suffixed.
+function realOrderIdFromQueueDoc(docId, data) {
+    if (typeof docId === 'string' && docId.endsWith('__pickup')) {
+        return docId.slice(0, -'__pickup'.length);
+    }
+    const stored = (data && data.orderId) || '';
+    return typeof stored === 'string' && stored.length ? stored : docId;
+}
+
 exports.autoAssignDeliveryQueueEntry = functions.firestore
     .document('deliveryQueue/{orderId}')
     .onCreate(async (snapshot, context) => {
         if ((snapshot.data().assignedTo || '').toString()) return null;
+        const orderId = realOrderIdFromQueueDoc(context.params.orderId, snapshot.data());
         const [usersSnap, queueSnap] = await Promise.all([
             db.collection('users').get(),
             db.collection('deliveryQueue').get(),
@@ -72,7 +175,7 @@ exports.autoAssignDeliveryQueueEntry = functions.firestore
                 assignmentSource: 'automatic',
                 assignedAt: admin.firestore.FieldValue.serverTimestamp(),
             });
-            transaction.set(db.collection('orders').doc(context.params.orderId), {
+            transaction.set(db.collection('orders').doc(orderId), {
                 assignedDeliveryStaffId: selected,
                 deliveryStaffAssignmentSource: 'automatic',
                 updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -80,7 +183,7 @@ exports.autoAssignDeliveryQueueEntry = functions.firestore
             return true;
         });
         if (assigned) {
-            await deliverNotification(selected, 'Delivery task assigned', `You were automatically assigned order ${context.params.orderId.substring(0, 6).toUpperCase()}.`, 'operational', context.params.orderId);
+            await deliverNotification(selected, 'Delivery task assigned', `You were automatically assigned transaction ${orderId.substring(0, 6).toUpperCase()}.`, 'operational', orderId);
         }
         return null;
     });
@@ -533,12 +636,21 @@ exports.repriceVerifiedOrder = functions.firestore.document('orders/{orderId}').
             t.set(customerUsageRef, { customerId, count: customerPromoUsage + 1, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
             t.update(promoRef, { usageCount: promoUsage + 1, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
         }
-        const deliveryFee = Math.max(0, Number(current.deliveryFee || 0)); // produced by DeliveryFeeEngine at order creation
+const deliveryFee = Math.max(0, Number(current.deliveryFee || 0)); // produced by DeliveryFeeEngine at order creation
         const soapTotal = Number(current.soapTotal || 0);
         const total = laundrySubtotal - membershipDiscount - promoDiscount + deliveryFee + soapTotal;
+        // Balance reconciliation: finalAmount is the authoritative price after
+        // verified weight. amountPaid is whatever the customer has actually paid
+        // (set by payment verification and by balance collections). The order is
+        // never "fully paid" while a positive balance remains unsettled.
+        const amountPaid = Math.max(0, Number(current.amountPaid || 0));
+        const balanceDue = Math.max(0, total - amountPaid);
+        const refundAmount = Math.max(0, amountPaid - total);
         t.update(orderRef, {
             numberOfLoads: loads, subtotal: laundrySubtotal, laundrySubtotal,
             membershipDiscount, promoDiscount,
+            finalAmount: total,
+            balanceDue, refundAmount,
             pricingBreakdown: { loadCount: loads, laundrySubtotal, membershipDiscount, promoDiscount, appliedDiscount: membershipDiscount + promoDiscount, deliveryFee, total },
             totalAmount: total, engagementPriceFinalized: true,
             engagementPricedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -556,7 +668,12 @@ exports.awardLoyaltyOnCompletion = functions.firestore.document('orders/{orderId
     const order = change.after.data(); const now = new Date(); const ctx = await engagementContext(order.userId || order.customerId, now);
     if (!setting(ctx.features, 'loyaltyEnabled')) return null;
     const spend = Number(order.laundrySubtotal ?? order.subtotal ?? 0);
-    let points = Math.floor(spend / 100) * 10;
+    // Read configurable rates from loyalty_settings instead of hardcoding
+    let spendAmount = 100, pointsAwarded = 10;
+    try { const ls = await db.doc('loyalty_settings/default').get(); if (ls.exists) { spendAmount = Number(ls.data().spendAmount || 100); pointsAwarded = Number(ls.data().pointsAwarded || 10); } } catch(e) {}
+    if (spendAmount <= 0) spendAmount = 100;
+    if (pointsAwarded <= 0) pointsAwarded = 10;
+    let points = Math.floor(spend / spendAmount) * pointsAwarded;
     if (ctx.subscription && ctx.plan) points = Math.floor(points * Number(ctx.plan.loyaltyMultiplier || 1));
     if (!points) return null;
     const txRef = db.collection('loyalty_transactions').doc(context.params.orderId);
@@ -631,9 +748,58 @@ exports.redeemLoyaltyRewardRequest = functions.firestore.document('loyalty_redem
         const [settings, reward, balance, prior] = await Promise.all([t.get(db.doc('system_settings/business_features')), t.get(db.collection('loyalty_rewards').doc(rewardId)), t.get(db.collection('loyalty_balances').doc(customerId)), t.get(redemption)]);
         if (!setting(settings.data(), 'loyaltyEnabled') || !setting(settings.data(), 'loyaltyRedemptionEnabled')) throw Error('Redemption unavailable');
         if (!reward.exists || reward.data().status !== 'Active') throw Error('Reward unavailable'); if (prior.exists) return;
-        const required = Number(reward.data().requiredPoints || 0), points = balance.exists ? Number(balance.data().points || 0) : 0; if (points < required) throw Error('Insufficient points');
-        t.set(redemption, { customerId, rewardId, requiredPoints: required, rewardSnapshot: reward.data(), createdAt: admin.firestore.FieldValue.serverTimestamp() });
+        const rd = reward.data();
+        const required = Number(rd.requiredPoints || 0), points = balance.exists ? Number(balance.data().points || 0) : 0; if (points < required) throw Error('Insufficient points');
+        t.set(redemption, { customerId, rewardId, requiredPoints: required, rewardSnapshot: rd, createdAt: admin.firestore.FieldValue.serverTimestamp() });
         t.set(balance.ref, { customerId, points: points - required, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
-        t.set(snap.ref, { status: 'Redeemed', redemptionId: redemption.id }, { merge: true });
+        // Fulfillment: generate a promo code for the reward value
+        const rewardType = rd.type || 'fixed_discount';
+        const rewardValue = Number(rd.value || 0);
+        if (rewardType === 'fixed_discount' && rewardValue > 0) {
+            const code = `LOYALTY-${snap.id.substring(0, 8).toUpperCase()}`;
+            const now = new Date();
+            const expiry = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000); // 30 days
+            await db.collection('promotions').doc(code.toLowerCase()).set({
+                code, name: `Loyalty: ${rd.name || 'Discount'}`, type: 'fixed', value: rewardValue,
+                minimumOrderAmount: 0, status: 'Active', memberOnly: false,
+                startDate: admin.firestore.Timestamp.fromDate(now),
+                endDate: admin.firestore.Timestamp.fromDate(expiry),
+                customerUsageLimit: 1, usageLimit: 1,
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            t.set(snap.ref, { status: 'Redeemed', redemptionId: redemption.id, promoCode: code }, { merge: true });
+        } else {
+            t.set(snap.ref, { status: 'Redeemed', redemptionId: redemption.id }, { merge: true });
+        }
     }).catch(async error => snap.ref.set({ status: 'Rejected', reason: error.message }, { merge: true })); return null;
+});
+
+// When an order is cancelled, reverse any loyalty points that were awarded.
+exports.reverseLoyaltyOnCancellation = functions.firestore.document('orders/{orderId}').onWrite(async (change, context) => {
+    const orderId = context.params.orderId;
+    const before = change.before.exists ? change.before.data() : null;
+    const after = change.after.exists ? change.after.data() : null;
+    if (!after) return null;
+    const beforeStatus = before ? before.status : null;
+    if (after.status !== 'Cancelled' || beforeStatus === 'Cancelled') return null;
+    const customerId = after.userId || after.customerId;
+    if (!customerId) return null;
+    const txRef = db.collection('loyalty_transactions').doc(orderId);
+    const txSnap = await txRef.get();
+    if (!txSnap.exists || txSnap.data().type !== 'earn') return null;
+    const pointsToReverse = Number(txSnap.data().points || 0);
+    if (!pointsToReverse || pointsToReverse <= 0) return null;
+    const balanceRef = db.collection('loyalty_balances').doc(customerId);
+    await db.runTransaction(async t => {
+        const tx = await t.get(txRef);
+        if (!tx.exists || tx.data().type !== 'earn' || tx.data().reversed) return;
+        const balance = await t.get(balanceRef);
+        const current = balance.exists ? Number(balance.data().points || 0) : 0;
+        t.set(txRef, { reversed: true, reversedPoints: pointsToReverse, reversedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+        t.set(balanceRef, { customerId, points: Math.max(0, current - pointsToReverse), updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+        t.set(db.collection('loyalty_transactions').doc(`${orderId}_reverse`), {
+            orderId, customerId, points: -pointsToReverse, type: 'reverse', reason: 'Order cancelled', createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+    });
+    return null;
 });

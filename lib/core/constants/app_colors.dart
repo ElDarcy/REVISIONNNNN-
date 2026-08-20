@@ -1,37 +1,48 @@
 import 'package:flutter/material.dart';
+import '../theme/brand.dart';
 
+/// Application color palette.
+///
+/// Values are derived from the Thia & Nicole Laundry Shop logo brand tokens.
+/// Semantic colors (success/warning/error/status/role) remain separate from
+/// the brand palette.
 class AppColors {
-  static const Color primary = Color(0xFF1565C0);
-  static const Color primaryLight = Color(0xFF42A5F5);
-  static const Color primaryDark = Color(0xFF0D47A1);
-  static const Color secondary = Color(0xFF4FC3F7);
-  static const Color accent = Color(0xFF03A9F4);
+  // Brand
+  static const Color primary = BrandColors.navy;
+  static const Color primaryLight = BrandColors.aqua;
+  static const Color primaryDark = BrandColors.navyDark;
+  static const Color secondary = BrandColors.aqua;
+  static const Color accent = BrandColors.aquaLight;
 
-  static const Color success = Color(0xFF4CAF50);
-  static const Color warning = Color(0xFFFFC107);
-  static const Color error = Color(0xFFE53935);
-  static const Color info = Color(0xFF2196F3);
+  static const Color success = BrandColors.success;
+  static const Color warning = BrandColors.warning;
+  static const Color error = BrandColors.error;
+  static const Color info = BrandColors.aqua;
 
-  static const Color backgroundLight = Color(0xFFF5F5F5);
-  static const Color backgroundDark = Color(0xFF121212);
-  static const Color surfaceLight = Colors.white;
-  static const Color surfaceDark = Color(0xFF1E1E1E);
+  static const Color backgroundLight = BrandColors.background;
+  static const Color backgroundDark = BrandColors.navyDark;
+  static const Color surfaceLight = BrandColors.surface;
+  static const Color surfaceDark = BrandColors.navy;
 
-  static const Color textPrimary = Color(0xFF212121);
-  static const Color textSecondary = Color(0xFF757575);
+  static const Color textPrimary = BrandColors.textPrimary;
+  static const Color textSecondary = BrandColors.textSecondary;
   static const Color textLight = Colors.white;
-  static const Color textHint = Color(0xFFBDBDBD);
+  static const Color textHint = BrandColors.textHint;
 
-  static const Color borderLight = Color(0xFFE0E0E0);
-  static const Color borderDark = Color(0xFF424242);
+  static const Color borderLight = BrandColors.border;
+  static const Color borderDark = Color(0xFF3A4A63);
 
-  static const Color pendingColor = Color(0xFFFFA726);
-  static const Color processingColor = Color(0xFF42A5F5);
-  static const Color completedColor = Color(0xFF66BB6A);
-  static const Color cancelledColor = Color(0xFFEF5350);
+  static const Color pendingColor = BrandColors.warning;
+  static const Color processingColor = BrandColors.aqua;
+  static const Color completedColor = BrandColors.success;
+  static const Color cancelledColor = BrandColors.error;
 
   // Role Colors
-  static const Color customerColor = Color(0xFF42A5F5);
-  static const Color staffColor = Color(0xFFFFA726);
-  static const Color adminColor = Color(0xFFEF5350);
+  static const Color customerColor = BrandColors.aqua;
+  static const Color staffColor = BrandColors.warning;
+  static const Color adminColor = BrandColors.error;
+
+  // Brand tints for backgrounds / subtle accents
+  static const Color aquaSoft = BrandColors.aquaSoft;
+  static const Color navySoft = BrandColors.navySoft;
 }

@@ -1,4 +1,5 @@
 import '../models/machine_model.dart';
+import '../models/order_load_model.dart';
 import '../core/constants/app_constants.dart';
 
 /// Engine that selects the best available machine using a
@@ -147,5 +148,27 @@ class MachineAssignmentEngine {
               m.usageCount >= AppConstants.maintenanceThreshold,
         )
         .toList();
+  }
+
+  /// FIFO ordering for waiting loads: oldest `createdAt` first (queue
+  /// position #1 = oldest). This is what the scheduler uses to decide which
+  /// waiting load gets the next available machine.
+  static List<OrderLoadModel> sortWaitingLoadsFifo(
+    List<OrderLoadModel> loads,
+  ) {
+    final copy = List<OrderLoadModel>.from(loads);
+    copy.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return copy;
+  }
+
+  /// Whether a load already has a machine assigned for the given stage type
+  /// (`wash` or `dry`). Enforces the state invariant: a load must NEVER be
+  /// "Waiting for Machine/Dryer" while a washer/dryer is already assigned to
+  /// it (that would mean a machine is reserved with the load still waiting).
+  static bool hasAssignedMachine(OrderLoadModel load, String type) {
+    final id = type == AppConstants.machineWasher
+        ? load.assignedWasherId
+        : load.assignedDryerId;
+    return id != null && id.isNotEmpty;
   }
 }

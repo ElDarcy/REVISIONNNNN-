@@ -95,7 +95,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen> {
                     ),
                   ),
                   title: Text(
-                    order.transactionNumber ?? 'Transaction #${order.id.substring(0, 6).toUpperCase()}',
+                    order.displayNumber,
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                   subtitle: Column(

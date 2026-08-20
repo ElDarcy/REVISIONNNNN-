@@ -298,16 +298,16 @@ class _AdminMachineManagementScreenState
     final machineProvider = context.read<MachineProvider>();
     final isAdmin = context.read<AuthProvider>().isAdmin;
     final reportedBy = context.read<AuthProvider>().user?.name ?? 'Admin';
+    String? selectedMachineId;
+    String? type;
+    final reasonCtrl = TextEditingController();
+    final notesCtrl = TextEditingController();
+    final expectedCtrl = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+
     showDialog(
       context: context,
       builder: (dialogContext) {
-        String? selectedMachineId;
-        String? type;
-        final reasonCtrl = TextEditingController();
-        final notesCtrl = TextEditingController();
-        final expectedCtrl = TextEditingController();
-        final formKey = GlobalKey<FormState>();
-
         return AlertDialog(
           title: const Text('Add Maintenance Record'),
           content: Form(
@@ -426,7 +426,11 @@ class _AdminMachineManagementScreenState
           ],
         );
       },
-    );
+    ).then((_) {
+      reasonCtrl.dispose();
+      notesCtrl.dispose();
+      expectedCtrl.dispose();
+    });
   }
 }
 
@@ -461,7 +465,7 @@ class _MachineAdminCard extends StatelessWidget {
         subtitle: Text(
           '${machine.type == AppConstants.machineWasher ? 'Washer' : 'Dryer'} '
           '· Usage: ${machine.usageCount} cycles'
-          '${machine.currentOrderId != null ? ' · Order active' : ''}',
+          '${machine.currentOrderId != null ? ' · Transaction active' : ''}',
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,

@@ -262,8 +262,8 @@ class _MachineCardState extends State<_MachineCard> {
           children: [
             Text(
               machine.currentOrderId != null
-                  ? 'Order #${machine.currentOrderId!.substring(0, 6).toUpperCase()}'
-                  : 'No active order',
+                  ? 'Transaction #${machine.currentOrderId!.substring(0, 6).toUpperCase()}'
+                  : 'No active transaction',
             ),
             Text(
               'Usage: ${machine.usageCount} cycles',
@@ -394,34 +394,46 @@ class _MachineCardState extends State<_MachineCard> {
   }
 
   /// Live remaining time for machines that are actively washing/drying.
-  /// Reads the associated order's `estimatedFinish` timestamp. Reserved
-  /// machines (not yet started) show "Awaiting start".
+  /// Reads the associated LOAD's `washEstimatedFinish`/`dryEstimatedFinish` so
+  /// the timer always corresponds to the actual load being processed.
+  /// A Reserved machine (not yet started) shows "Awaiting start" and NEVER
+  /// runs a countdown — a wash timer only starts with the Start Wash action.
   Widget _buildRemainingTime() {
-    if (!machine.isInUse) return const SizedBox.shrink();
-    if (machine.currentOrderId == null) return const SizedBox.shrink();
+    final isWashing = machine.status == AppConstants.machineWashing;
+    final isDrying = machine.status == AppConstants.machineDrying;
+    if (!isWashing && !isDrying) {
+      if (machine.status == AppConstants.machineReserved) {
+        return const Text(
+          'Awaiting start',
+          style: TextStyle(fontSize: 12, color: Colors.grey),
+        );
+      }
+      return const SizedBox.shrink();
+    }
+    if (machine.currentLoadId == null) return const SizedBox.shrink();
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       stream: FirebaseFirestore.instance
-          .collection('orders')
-          .doc(machine.currentOrderId)
+          .collection('orderLoads')
+          .doc(machine.currentLoadId)
           .snapshots(),
       builder: (context, snapshot) {
         final data = snapshot.data?.data();
-        final finish = _parseDate(data?['estimatedFinish']);
+        final finish = _parseDate(
+          data?[isWashing ? 'washEstimatedFinish' : 'dryEstimatedFinish'],
+        );
         if (finish == null) {
-          return Text(
-            machine.status == AppConstants.machineReserved
-                ? 'Awaiting start'
-                : 'Timer not set',
-            style: const TextStyle(fontSize: 12, color: Colors.grey),
+          return const Text(
+            'Timer not set',
+            style: TextStyle(fontSize: 12, color: Colors.grey),
           );
         }
 
         final remaining = finish.difference(DateTime.now());
         if (remaining.isNegative) {
-          return Text(
+          return const Text(
             'Time elapsed',
-            style: const TextStyle(fontSize: 12, color: AppColors.error),
+            style: TextStyle(fontSize: 12, color: AppColors.error),
           );
         }
 

@@ -43,24 +43,42 @@ class AdminDashboardScreen extends StatelessWidget {
           final totalOrders = docs.length;
           final pendingPayments = docs.where((d) {
             final ps = d['paymentStatus'] as String?;
-            return ps == 'Pending Verification';
+            return ps == 'Pending Verification' || ps == 'Pending Collection';
           }).length;
           final processing = docs.where((d) {
             final status = d['status'] as String?;
-            return status == 'Order Received' ||
-                status == 'Payment Pending Verification' ||
-                status == 'Payment Verified' ||
+            return status == 'Payment Verified' ||
+                status == 'Order Received' ||
                 status == 'Waiting for Machine' ||
+                status == 'Machine Assigned' ||
                 status == 'Washing' ||
                 status == 'Waiting for Dryer' ||
+                status == 'Dryer Assigned' ||
                 status == 'Drying' ||
                 status == 'Folding';
           }).length;
+          final ready = docs.where((d) {
+            final status = d['status'] as String?;
+            return status == 'Ready for Pickup' || status == 'Ready for Delivery';
+          }).length;
+          final outForDelivery = docs.where((d) {
+            final status = d['status'] as String?;
+            return status == 'Out for Delivery';
+          }).length;
           final completed = docs.where((d) {
             final status = d['status'] as String?;
-            return status == 'Completed';
+            return status == 'Completed' || status == 'Delivered' || status == 'Picked Up';
           }).length;
+          final cancelled = docs.where((d) {
+            final status = d['status'] as String?;
+            return status == 'Cancelled';
+          }).length;
+          // BUG FIX: Revenue only includes paid/verified orders (not rejected, cancelled, or unverified)
           final revenue = docs.fold<double>(0.0, (sum, d) {
+            final paymentStatus = d['paymentStatus'] as String?;
+            final status = d['status'] as String?;
+            if (paymentStatus != 'Verified') return sum;
+            if (status == 'Cancelled' || status == 'Rejected') return sum;
             final amount = (d['totalAmount'] as num?)?.toDouble() ?? 0;
             return sum + amount;
           });
@@ -79,13 +97,13 @@ class AdminDashboardScreen extends StatelessWidget {
                   childAspectRatio: 1.5,
                   children: [
                     _buildStatCard(
-                      'Total Orders',
+                      'Total Transactions',
                       totalOrders.toString(),
                       Icons.receipt,
                       AppColors.primary,
                     ),
                     _buildStatCard(
-                      'Pending Payments',
+                      'Pending Payment',
                       pendingPayments.toString(),
                       Icons.payment,
                       AppColors.warning,
@@ -97,10 +115,39 @@ class AdminDashboardScreen extends StatelessWidget {
                       AppColors.processingColor,
                     ),
                     _buildStatCard(
+                      'Ready',
+                      ready.toString(),
+                      Icons.check_circle_outline,
+                      AppColors.success,
+                    ),
+                    _buildStatCard(
+                      'Out for Delivery',
+                      outForDelivery.toString(),
+                      Icons.local_shipping,
+                      const Color(0xFF43A047),
+                    ),
+                    _buildStatCard(
                       'Completed',
                       completed.toString(),
                       Icons.check_circle,
                       AppColors.success,
+                    ),
+                    _buildStatCard(
+                      'Cancelled',
+                      cancelled.toString(),
+                      Icons.cancel,
+                      AppColors.error,
+                    ),
+                    _buildStatCard(
+                      'Delivered',
+                      (docs.where((d) {
+                        final data = d.data();
+                        if (data is! Map) return false;
+                        final ds = data['deliveryStatus'] as String?;
+                        return ds == 'Delivered';
+                      }).length).toString(),
+                      Icons.delivery_dining,
+                      const Color(0xFF43A047),
                     ),
                   ],
                 ),

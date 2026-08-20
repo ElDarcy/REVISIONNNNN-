@@ -1,16 +1,16 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:uuid/uuid.dart';
 import '../models/payment_model.dart';
-import '../services/storage_service.dart';
 import '../engines/service_time_estimator.dart';
+import '../engines/financial_settlement_engine.dart';
 import '../engines/order_status_flow_engine.dart';
 import '../engines/order_scheduling_gate.dart';
 
 class PaymentProvider extends ChangeNotifier {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final StorageService _storageService = StorageService();
   final Uuid _uuid = const Uuid();
 
   List<PaymentModel> _pendingPayments = [];
@@ -22,15 +22,22 @@ class PaymentProvider extends ChangeNotifier {
   String? get error => _error;
 
   Stream<List<PaymentModel>> streamPendingPayments() {
+    // Sorted client-side: combining `where('status')` with `orderBy('createdAt')`
+    // requires a composite Firestore index, and a missing index makes the
+    // stream error intermittently (cards appear then vanish). Ordering in
+    // memory keeps the pending list stable with no index dependency.
     return _firestore
         .collection('payments')
         .where('status', isEqualTo: 'Pending Verification')
-        .orderBy('createdAt', descending: true)
         .snapshots()
         .map(
-          (snapshot) => snapshot.docs
-              .map((doc) => PaymentModel.fromMap(doc.data(), doc.id))
-              .toList(),
+          (snapshot) {
+            final payments = snapshot.docs
+                .map((doc) => PaymentModel.fromMap(doc.data(), doc.id))
+                .toList();
+            payments.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+            return payments;
+          },
         );
   }
 
@@ -68,17 +75,50 @@ class PaymentProvider extends ChangeNotifier {
     required String receiptImagePath,
     String paymentType = 'laundry',
   }) async {
+    try {
+      final bytes = await File(receiptImagePath).readAsBytes();
+      return await processGCashPaymentFromBytes(
+        orderId: orderId,
+        userId: userId,
+        amount: amount,
+        referenceNumber: referenceNumber,
+        receiptBytes: bytes,
+        paymentType: paymentType,
+      );
+    } catch (e) {
+      _error = 'Payment processing failed.';
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> processGCashPaymentFromBytes({
+    required String orderId,
+    required String userId,
+    required double amount,
+    required String referenceNumber,
+    required List<int> receiptBytes,
+    String paymentType = 'laundry',
+  }) async {
     _isLoading = true;
     _error = null;
     notifyListeners();
 
     try {
-      final receiptUrl = await _storageService.uploadReceiptImage(
-        receiptFile: File(receiptImagePath),
-        userId: userId,
-        orderId: orderId,
-      );
+      // Base64 is about 4/3 the final JPEG size. Keep the proof document
+      // comfortably below Firestore's 1 MiB document limit.
+      const maxProofBase64Bytes = 700 * 1024;
+      final proofBase64 = base64Encode(receiptBytes);
+      if (proofBase64.length > maxProofBase64Bytes) {
+        _error = 'Receipt screenshot is too large. Please pick a smaller photo.';
+        _isLoading = false;
+        notifyListeners();
+        return false;
+      }
 
+      final now = DateTime.now();
+      final proofId = _uuid.v4();
       final paymentId = _uuid.v4();
       final payment = PaymentModel(
         id: paymentId,
@@ -88,21 +128,38 @@ class PaymentProvider extends ChangeNotifier {
         method: 'GCash',
         paymentType: paymentType,
         referenceNumber: referenceNumber,
-        receiptImageUrl: receiptUrl,
+        receiptProofId: proofId,
       );
 
+      // Write the receipt Base64 straight into Firestore (no Firebase Storage
+      // round-trip) so the submit completes immediately instead of getting
+      // stuck on the upload. Proofs live in `transaction_proofs`, the same
+      // collection used for weight and membership proofs.
+      final proofRef =
+          _firestore.collection('transaction_proofs').doc(proofId);
+
       final batch = _firestore.batch();
+      batch.set(
+        proofRef,
+        {
+          'txn_id': orderId,
+          'proof_type': 'gcash_receipt',
+          'image_base64': proofBase64,
+          'submitted_by': userId,
+          'createdAt': now.toIso8601String(),
+        },
+      );
       batch.set(_firestore.collection('payments').doc(paymentId), payment.toMap());
       if (paymentType == 'laundry') {
         batch.update(_firestore.collection('orders').doc(orderId), {
           'paymentStatus': 'Pending Verification',
           'status': 'Payment Pending Verification',
-          'updatedAt': DateTime.now().toIso8601String(),
+          'updatedAt': now.toIso8601String(),
         });
       } else {
         batch.update(_firestore.collection('orders').doc(orderId), {
           'deliveryFeePaymentStatus': 'Pending Verification',
-          'updatedAt': DateTime.now().toIso8601String(),
+          'updatedAt': now.toIso8601String(),
         });
       }
       await batch.commit();
@@ -135,16 +192,17 @@ class PaymentProvider extends ChangeNotifier {
     try {
       final now = DateTime.now();
 
-      if (approved) {
+if (approved) {
         // Get the associated order
         final paymentDoc = await _firestore
             .collection('payments')
             .doc(paymentId)
             .get();
-        final orderId = paymentDoc.data()?['orderId'] as String?;
+        final paymentData = paymentDoc.data();
+        final orderId = paymentData?['orderId'] as String?;
+        final paymentAmount = (paymentData?['amount'] as num?)?.toDouble() ?? 0;
 
-        final paymentType = paymentDoc.data()?['paymentType'] as String? ??
-            'laundry';
+        final paymentType = paymentData?['paymentType'] as String? ?? 'laundry';
         if (orderId == null) throw StateError('Payment has no order.');
 
         if (paymentType != 'laundry') {
@@ -166,22 +224,25 @@ class PaymentProvider extends ChangeNotifier {
         // 3. derive from weight (max 8kg per cycle)
         int cycles = 1;
         double weight = 0;
-        if (orderId != null) {
-          final orderDoc = await _firestore
-              .collection('orders')
-              .doc(orderId)
-              .get();
-          final orderData = orderDoc.data();
-          if (orderData != null) {
-            weight = (orderData['weight'] ?? 0).toDouble();
-            cycles = (orderData['cycles'] as num?)?.toInt() ?? 0;
+        double currentTotal = 0;
+        final orderDoc = await _firestore
+            .collection('orders')
+            .doc(orderId)
+            .get();
+        final orderData = orderDoc.data();
+        if (orderData != null) {
+          weight = (orderData['weight'] ?? 0).toDouble();
+          cycles = (orderData['cycles'] as num?)?.toInt() ?? 0;
+          currentTotal =
+              ((orderData['finalAmount'] ?? orderData['totalAmount']) as num?)
+                      ?.toDouble() ??
+                  0;
 
-            if (cycles <= 0) {
-              final items = orderData['items'] as List<dynamic>?;
-              if (items != null && items.isNotEmpty) {
-                final qty = (items.first['quantity'] as num?)?.toDouble() ?? 0;
-                cycles = qty.round();
-              }
+          if (cycles <= 0) {
+            final items = orderData['items'] as List<dynamic>?;
+            if (items != null && items.isNotEmpty) {
+              final qty = (items.first['quantity'] as num?)?.toDouble() ?? 0;
+              cycles = qty.round();
             }
           }
         }
@@ -208,15 +269,32 @@ class PaymentProvider extends ChangeNotifier {
           'estimatedDuration': estimatedDuration,
         });
 
-        // Update the associated order
+// Update the associated order. The verified payment amount becomes the
+        // customer's amountPaid; any difference against the (possibly already
+        // weight-repriced) finalAmount is recorded as balanceDue/refundAmount.
+        final balanceDue = FinancialSettlementEngine.balanceDue(
+          finalAmount: currentTotal,
+          amountPaid: paymentAmount,
+        );
+        final refundAmount = FinancialSettlementEngine.refundAmount(
+          finalAmount: currentTotal,
+          amountPaid: paymentAmount,
+        );
         await _firestore.collection('orders').doc(orderId).update({
           'paymentStatus': 'Verified',
           'status': OrderStatusFlowEngine.statusPaymentVerified,
           'approvedAt': now.toIso8601String(),
+          'approvedBy': adminId,
+          'amountPaid': paymentAmount,
+          'balanceDue': balanceDue,
+          'refundAmount': refundAmount,
           'estimatedDuration': estimatedDuration,
           'updatedAt': now.toIso8601String(),
         });
-        // Weight approval is the only path that may create production loads.
+
+        // Auto-assign the right staff for the order's phase (delivery staff for
+        // a Pickup order's pickup leg, laundry worker otherwise) and release
+        // through the scheduling gate if all preconditions are met.
         await OrderSchedulingGate.releaseIfEligible(_firestore, orderId);
       } else {
         // Reject

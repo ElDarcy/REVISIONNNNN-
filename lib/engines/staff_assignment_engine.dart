@@ -56,7 +56,7 @@ class StaffAssignmentEngine {
       final activity =
           order.updatedAt ??
           order.completedAt ??
-          order.approvedAt ??
+          order.processingStartedAt ??
           order.createdAt;
 
       final current = lastActive[staffId];

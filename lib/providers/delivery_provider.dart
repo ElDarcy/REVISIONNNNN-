@@ -112,8 +112,10 @@ class DeliveryProvider extends ChangeNotifier {
 
       final entry = DeliveryQueueEntry(
         orderId: orderId,
+        transactionNumber: data['transactionNumber'],
         customerId: data['userId'],
         customerName: data['customerName'],
+        type: 'delivery',
         address: data['deliveryAddress'] != null
             ? (data['deliveryAddress'] is Map
                   ? (data['deliveryAddress'] as Map)['fullAddress'] ??
@@ -162,10 +164,27 @@ class DeliveryProvider extends ChangeNotifier {
     }
   }
 
-  /// Complete a delivery without changing the completed laundry status.
+/// Complete a delivery. Marks the queue entry done and finalizes the parent
+  /// order as Completed. Refuses to complete while a balance is still owed and
+  /// uncollected, so a delivery can never be finished on an unsettled bill.
   Future<bool> completeDelivery(String orderId) async {
     try {
       final now = Timestamp.now();
+      final orderSnap = await _firestore.collection('orders').doc(orderId).get();
+      if (orderSnap.exists) {
+        final data = orderSnap.data()!;
+        final amountPaid = (data['amountPaid'] as num?)?.toDouble() ?? 0;
+        final finalAmount =
+            (data['finalAmount'] ?? data['totalAmount'] as num?)?.toDouble() ?? 0;
+        final balanceDue = (data['balanceDue'] as num?)?.toDouble() ?? 0;
+        if (finalAmount > 0 &&
+            (balanceDue > 0 || amountPaid + 1e-9 < finalAmount)) {
+          _error = 'Collect the balance before completing delivery.';
+          notifyListeners();
+          return false;
+        }
+      }
+
       await _firestore.collection('deliveryQueue').doc(orderId).update({
         'status': 'Completed',
         'completedAt': now,
@@ -173,6 +192,8 @@ class DeliveryProvider extends ChangeNotifier {
       await _firestore.collection('orders').doc(orderId).update({
         'deliveryStatus': 'Delivered',
         'deliveredAt': now,
+        'status': 'Completed',
+        'completedAt': now,
         'updatedAt': now,
       });
       return true;

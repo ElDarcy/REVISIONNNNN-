@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
-import '../../../core/widgets/custom_button.dart';
-import '../../../core/widgets/custom_text_field.dart';
+import '../../../core/constants/app_sizes.dart';
+import '../../../core/theme/brand.dart';
+import '../../../core/widgets/brand_logo.dart';
+import '../../../core/widgets/onboarding_scaffold.dart';
 import '../../../core/utils/validators.dart';
 
 class RegisterStep1Screen extends StatefulWidget {
@@ -48,97 +50,142 @@ class _RegisterStep1ScreenState extends State<RegisterStep1Screen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Create Account')),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
+      backgroundColor: BrandColors.background,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        foregroundColor: BrandColors.navy,
+        elevation: 0,
+      ),
+      body: OnboardingScaffold(
+        header: const Column(
+          children: [
+            BrandLogo(size: 88),
+            SizedBox(height: AppSizes.spaceSm),
+            Text(
+              'Step 1 of 2 · Your Account',
+              style: TextStyle(
+                color: BrandColors.textSecondary,
+                fontSize: AppSizes.fontSm,
+              ),
+            ),
+          ],
+        ),
         child: Form(
           key: _formKey,
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text(
-                'Step 1 of 2',
-                style: TextStyle(fontSize: 14, color: Colors.grey),
+              Text(
+                'Create your account',
+                style: Theme.of(context).textTheme.headlineMedium,
+                textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 4),
-              LinearProgressIndicator(
-                value: 0.5,
-                backgroundColor: Colors.grey.shade200,
-                color: const Color(0xFF1565C0),
+              const SizedBox(height: AppSizes.spaceXs),
+              Text(
+                'Tell us a little about you. We\'ll set up your delivery '
+                'location in the next step.',
+                style: Theme.of(context).textTheme.bodyMedium,
+                textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 24),
-              const Text(
-                'Personal Information',
-                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 24),
-              CustomTextField(
+              const SizedBox(height: AppSizes.spaceLg),
+              TextFormField(
                 controller: _nameController,
-                labelText: 'Full Name',
-                hintText: 'Enter your full name',
-                prefixIcon: const Icon(Icons.person_outlined),
+                textCapitalization: TextCapitalization.words,
+                textInputAction: TextInputAction.next,
                 validator: Validators.validateName,
+                decoration: const InputDecoration(
+                  labelText: 'Full Name',
+                  hintText: 'Enter your full name',
+                  prefixIcon: Icon(Icons.person_outline),
+                ),
               ),
-              const SizedBox(height: 16),
-              CustomTextField(
+              const SizedBox(height: AppSizes.spaceMd),
+              TextFormField(
                 controller: _emailController,
-                labelText: 'Email',
-                hintText: 'Enter your email',
                 keyboardType: TextInputType.emailAddress,
-                prefixIcon: const Icon(Icons.email_outlined),
+                textInputAction: TextInputAction.next,
+                autocorrect: false,
                 validator: Validators.validateEmail,
+                decoration: const InputDecoration(
+                  labelText: 'Email',
+                  hintText: 'Enter your email',
+                  prefixIcon: Icon(Icons.email_outlined),
+                ),
               ),
-              const SizedBox(height: 16),
-              CustomTextField(
+              const SizedBox(height: AppSizes.spaceMd),
+              TextFormField(
                 controller: _phoneController,
-                labelText: 'Phone Number',
-                hintText: '09xxxxxxxxx',
                 keyboardType: TextInputType.phone,
-                prefixIcon: const Icon(Icons.phone_outlined),
+                textInputAction: TextInputAction.next,
                 validator: Validators.validatePhone,
+                decoration: const InputDecoration(
+                  labelText: 'Phone Number',
+                  hintText: '09xxxxxxxxx',
+                  prefixIcon: Icon(Icons.phone_outlined),
+                ),
               ),
-              const SizedBox(height: 16),
-              CustomTextField(
+              const SizedBox(height: AppSizes.spaceMd),
+              TextFormField(
                 controller: _passwordController,
-                labelText: 'Password',
-                hintText: 'Min 6 characters',
                 obscureText: _obscurePassword,
-                prefixIcon: const Icon(Icons.lock_outlined),
-                suffixIcon: IconButton(
-                  icon: Icon(
-                    _obscurePassword ? Icons.visibility_off : Icons.visibility,
-                  ),
-                  onPressed: () =>
-                      setState(() => _obscurePassword = !_obscurePassword),
-                ),
+                textInputAction: TextInputAction.next,
                 validator: Validators.validatePassword,
-              ),
-              const SizedBox(height: 16),
-              CustomTextField(
-                controller: _confirmPasswordController,
-                labelText: 'Confirm Password',
-                hintText: 'Re-enter password',
-                obscureText: _obscureConfirm,
-                prefixIcon: const Icon(Icons.lock_outlined),
-                suffixIcon: IconButton(
-                  icon: Icon(
-                    _obscureConfirm ? Icons.visibility_off : Icons.visibility,
+                decoration: InputDecoration(
+                  labelText: 'Password',
+                  hintText: 'Min 6 characters',
+                  prefixIcon: const Icon(Icons.lock_outline),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscurePassword
+                          ? Icons.visibility_off
+                          : Icons.visibility,
+                    ),
+                    onPressed: () => setState(
+                      () => _obscurePassword = !_obscurePassword,
+                    ),
                   ),
-                  onPressed: () =>
-                      setState(() => _obscureConfirm = !_obscureConfirm),
                 ),
+              ),
+              const SizedBox(height: AppSizes.spaceMd),
+              TextFormField(
+                controller: _confirmPasswordController,
+                obscureText: _obscureConfirm,
+                textInputAction: TextInputAction.done,
+                onFieldSubmitted: (_) => _nextStep(),
                 validator: (value) => Validators.validateConfirmPassword(
                   value,
                   _passwordController.text,
                 ),
+                decoration: InputDecoration(
+                  labelText: 'Confirm Password',
+                  hintText: 'Re-enter password',
+                  prefixIcon: const Icon(Icons.lock_outline),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscureConfirm ? Icons.visibility_off : Icons.visibility,
+                    ),
+                    onPressed: () => setState(
+                      () => _obscureConfirm = !_obscureConfirm,
+                    ),
+                  ),
+                ),
               ),
-              const SizedBox(height: 32),
-              CustomButton(text: 'Next - Set Location', onPressed: _nextStep),
-              const SizedBox(height: 16),
+              const SizedBox(height: AppSizes.spaceXl),
+              FilledButton(
+                onPressed: _nextStep,
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(AppSizes.buttonHeight),
+                ),
+                child: const Text('Next · Set Delivery Location'),
+              ),
+              const SizedBox(height: AppSizes.spaceMd),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Text('Already have an account?'),
+                  Text(
+                    'Already have an account?',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
                   TextButton(
                     onPressed: () => Navigator.pop(context),
                     child: const Text('Sign In'),

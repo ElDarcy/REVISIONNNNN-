@@ -3,7 +3,6 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../models/notification_model.dart';
 import '../core/constants/app_colors.dart';
-import 'package:flutter/material.dart';
 
 class NotificationService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -15,24 +14,26 @@ class NotificationService {
   factory NotificationService() => instance;
 
   Future<void> initialize() async {
-    // 1. Request Permissions
-    await _fcm.requestPermission(
-      alert: true,
-      badge: true,
-      sound: true,
-    );
-
-    // 2. Local Notifications Setup (for foreground display)
+    // 1. Local Notifications Setup (for foreground display)
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
     const iosInit = DarwinInitializationSettings();
     await _localNotifications.initialize(
       const InitializationSettings(android: androidInit, iOS: iosInit),
     );
 
-    // 3. Listen for Foreground Messages
+    // 2. Listen for Foreground Messages
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
       _showForegroundNotification(message);
     });
+  }
+
+  /// Request notification permission. Called after user login, not at startup.
+  Future<void> requestPermission() async {
+    await _fcm.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
   }
 
   Future<void> _showForegroundNotification(RemoteMessage message) async {
@@ -140,9 +141,9 @@ class NotificationService {
   }) async {
     await sendNotification(
       userId: userId,
-      title: 'Order Update',
+      title: 'Transaction Update',
       body:
-          'Your order #${orderId.substring(0, 6).toUpperCase()} is now: $status',
+          'Your transaction #${orderId.substring(0, 6).toUpperCase()} is now: $status',
       type: 'order_update',
       orderId: orderId,
     );
@@ -157,7 +158,7 @@ class NotificationService {
         ? 'Payment Approved'
         : 'Payment Rejected';
     String body = status == 'Approved'
-        ? 'Your payment for order has been approved. We will start processing your laundry.'
+        ? 'Your payment has been approved. We will start processing your laundry.'
         : 'Your payment was rejected. Please check and resubmit.';
 
     await sendNotification(

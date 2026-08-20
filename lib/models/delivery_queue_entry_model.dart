@@ -7,6 +7,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 /// complete deliveries.
 class DeliveryQueueEntry {
   final String orderId;
+  final String? transactionNumber;
   final String? customerId;
   final String? customerName;
   final String? address;
@@ -23,6 +24,7 @@ class DeliveryQueueEntry {
 
   const DeliveryQueueEntry({
     required this.orderId,
+    this.transactionNumber,
     this.customerId,
     this.customerName,
     this.address,
@@ -44,6 +46,7 @@ class DeliveryQueueEntry {
   Map<String, dynamic> toMap() {
     return {
       'orderId': orderId,
+      'transactionNumber': transactionNumber,
       'customerId': customerId,
       'customerName': customerName,
       'address': address,
@@ -72,8 +75,9 @@ class DeliveryQueueEntry {
         ? id
         : rawOrderId.toString();
 
-    return DeliveryQueueEntry(
+return DeliveryQueueEntry(
       orderId: orderId,
+      transactionNumber: map['transactionNumber'],
       customerId: map['customerId'],
       customerName: map['customerName'],
       address: map['address'],

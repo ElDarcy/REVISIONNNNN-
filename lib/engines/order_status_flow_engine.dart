@@ -1,5 +1,6 @@
 import '../models/order_model.dart';
 import '../models/machine_model.dart';
+import '../models/laundry_status_model.dart';
 import '../core/constants/app_constants.dart';
 
 /// Central engine that determines service-specific order status flows.
@@ -36,6 +37,7 @@ class OrderStatusFlowEngine {
   static const String statusReadyForDelivery = 'Ready for Delivery';
   static const String statusReadyForPickup = 'Ready for Pickup';
   static const String statusOutForDelivery = 'Out for Delivery';
+  static const String statusPickedUp = 'Picked Up';
   static const String statusCompleted = 'Completed';
 
   static String _normalize(String name) {
@@ -82,17 +84,24 @@ class OrderStatusFlowEngine {
     return _normalize(serviceType) != serviceWashOnly;
   }
 
-  /// Delivery is involved when the customer chose 'Pickup'.
+  /// Delivery is involved when the customer chose 'Pickup' (collection method).
+  /// NOTE: This refers to collection method, NOT fulfillment.
   static bool hasDelivery(OrderModel order) {
     return order.deliveryMethod == 'Pickup';
   }
 
-  /// The ready status depends on the delivery method.
+  /// The ready status after laundry processing finishes.
+  /// DEFAULT: Always 'Ready for Pickup' (customer chooses fulfillment later).
+  /// Only 'Ready for Delivery' when the customer has explicitly chosen delivery.
   static String readyStatus(OrderModel order) {
-    return hasDelivery(order) ? statusReadyForDelivery : statusReadyForPickup;
+    if (order.fulfillmentMethod == 'Delivery') {
+      return statusReadyForDelivery;
+    }
+    return statusReadyForPickup;
   }
 
   /// Base (happy-path) flow without the conditional waiting statuses.
+  /// Always ends at Ready for Pickup — delivery is added later if customer requests it.
   static List<String> getBaseFlow(OrderModel order) {
     final service = resolveServiceType(order);
     final flow = <String>[
@@ -108,13 +117,17 @@ class OrderStatusFlowEngine {
       flow.add(statusDryerAssigned);
       flow.add(statusDrying);
     }
-    flow.add(readyStatus(order));
-    if (hasDelivery(order)) flow.add(statusOutForDelivery);
+    flow.add(statusReadyForPickup);
+    if (order.fulfillmentMethod == 'Delivery' &&
+        order.status.value == statusReadyForDelivery) {
+      flow.add(statusOutForDelivery);
+    }
     flow.add(statusCompleted);
     return flow;
   }
 
   /// Full flow including the conditional waiting statuses (for display).
+  /// Includes 'Picked Up' before 'Completed' for personal pickup transactions.
   static List<String> getFullFlow(OrderModel order) {
     final service = resolveServiceType(order);
     final flow = <String>[
@@ -132,8 +145,17 @@ class OrderStatusFlowEngine {
       flow.add(statusDryerAssigned);
       flow.add(statusDrying);
     }
-    flow.add(readyStatus(order));
-    if (hasDelivery(order)) flow.add(statusOutForDelivery);
+    flow.add(statusReadyForPickup);
+    if (order.fulfillmentMethod == 'Delivery' &&
+        order.status.value == statusReadyForDelivery) {
+      flow.add(statusOutForDelivery);
+    }
+    // Add 'Picked Up' for personal pickup transactions
+    if (order.isPersonalPickup ||
+        order.status.value == statusPickedUp ||
+        order.status.value == statusCompleted) {
+      flow.add(statusPickedUp);
+    }
     flow.add(statusCompleted);
     return flow;
   }
@@ -141,6 +163,30 @@ class OrderStatusFlowEngine {
   /// Current position of the order in its full flow (-1 if not found).
   static int getCurrentIndex(OrderModel order) {
     return getFullFlow(order).indexOf(order.status.value);
+  }
+
+  /// Whether the CUSTOMER is allowed to cancel this order.
+  ///
+  /// Cancellation is only offered while the laundry has not started processing
+  /// ([OrderModel.processingStartedAt] not set — no loads created yet) and the
+  /// order is not already finished or cancelled. Once processing starts the
+  /// customer should receive the laundry instead. Admins may cancel in more
+  /// states (handled by the provider guard, not here).
+  static bool canCustomerCancel(OrderModel order) {
+    if (order.status == LaundryStatus.cancelled ||
+        order.status == LaundryStatus.completed ||
+        order.status == LaundryStatus.delivered ||
+        order.status == LaundryStatus.pickedUp) {
+      return false;
+    }
+    return order.processingStartedAt == null;
+  }
+
+  /// Refund owed to the customer when an order is cancelled before any service
+  /// has been consumed — they get back everything they already paid.
+  static double cancelRefundAmount(OrderModel order) {
+    final paid = order.amountPaid;
+    return paid > 0 ? paid : 0;
   }
 
   /// Determine the next status a staff member should set, considering

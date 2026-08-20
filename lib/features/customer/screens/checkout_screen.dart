@@ -6,9 +6,14 @@ import '../../../services/location_service.dart';
 import '../../../engines/distance_engine.dart';
 import '../../../engines/delivery_fee_engine.dart';
 import '../../../engines/service_area_engine.dart';
+import '../../../engines/engagement_pricing_engine.dart';
+import '../../../models/engagement_models.dart';
 import '../../../providers/auth_provider.dart';
 import '../../../providers/order_provider.dart';
 import '../../../models/order_item_model.dart';
+import '../../../models/address_model.dart';
+import '../../../services/engagement_customer_service.dart';
+import '../../../services/business_configuration_service.dart';
 import '../../../config/app_config.dart';
 
 class CheckoutScreen extends StatefulWidget {
@@ -39,23 +44,64 @@ class CheckoutScreen extends StatefulWidget {
 
 class _CheckoutScreenState extends State<CheckoutScreen> {
   final LocationService _locationService = LocationService();
+  final TextEditingController _manualStreetController = TextEditingController();
+  final TextEditingController _manualBarangayController = TextEditingController();
+  final TextEditingController _manualCityController = TextEditingController();
   bool _isLoading = false;
   double _latitude = 0;
   double _longitude = 0;
   double _distance = 0;
   String _address = '';
   double _deliveryFee = 0;
+  bool _useManualAddress = false;
   // `Pickup` is the persisted legacy value for a staff collection request.
   // Keep that value so existing orders and pricing continue to work.
   String _deliveryMethod = 'Pickup'; // Request Pickup or Drop-off
 
+  // ── Engagement state ──
+  final TextEditingController _promoController = TextEditingController();
+  final EngagementCustomerService _engageApi = EngagementCustomerService();
+  final BusinessConfigurationService _configApi = BusinessConfigurationService();
+  Promotion? _appliedPromo;
+  String? _promoError;
+  bool _promoLoading = false;
+  MembershipPlan? _membershipPlan;
+  double _membershipDiscount = 0;
+
   @override
   void initState() {
     super.initState();
-    // Load location in the background WITHOUT blocking the page render.
-    // The checkout screen is fully usable immediately; delivery details
-    // populate when the location resolves (or a default is shown).
     _loadLocation();
+    _loadMembership();
+  }
+
+  void _loadMembership() {
+    final user = context.read<AuthProvider>().user;
+    if (user == null) return;
+    _engageApi.subscription(user.id).listen((sub) {
+      if (!mounted) return;
+      if (sub != null && sub['status'] == 'Active') {
+        final planId = sub['planId'] as String?;
+        if (planId != null) {
+          _configApi.watchPlans().listen((plans) {
+            if (!mounted) return;
+            final match = plans.where((p) => p.id == planId && p.status == 'Active');
+            setState(() { _membershipPlan = match.isNotEmpty ? match.first : null; });
+          });
+        }
+      } else {
+        setState(() { _membershipPlan = null; _membershipDiscount = 0; });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _manualStreetController.dispose();
+    _manualBarangayController.dispose();
+    _manualCityController.dispose();
+    _promoController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadLocation() async {
@@ -80,9 +126,70 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         _deliveryFee = deliveryFee;
       });
     } catch (e) {
-      // Location unavailable → keep default values so the page still works.
+      // BUG FIX: Location failure never blocks checkout. Allow manual address entry.
       debugPrint('Location load error: $e');
+      if (mounted) {
+        setState(() {
+          _useManualAddress = true;
+          _address = 'Location unavailable - please enter your address manually';
+        });
+      }
     }
+  }
+
+  /// Validate and apply a promo code. Checks against Firestore promotions
+  /// for eligibility, then sets the local state so the pricing recalculation
+  /// picks up the promo discount.
+  Future<void> _applyPromoCode() async {
+    final code = _promoController.text.trim();
+    if (code.isEmpty) {
+      setState(() { _promoError = 'Enter a promo code'; });
+      return;
+    }
+    setState(() { _promoLoading = true; _promoError = null; });
+
+    try {
+      // Fetch active promotions and find matching code
+      final snap = await _engageApi.promotions().first;
+      final match = snap.docs.where((d) {
+        final data = d.data();
+        return (data['code'] ?? '').toString().toUpperCase() == code.toUpperCase();
+      });
+
+      if (match.isEmpty) {
+        setState(() { _promoError = 'Invalid promo code'; _promoLoading = false; });
+        return;
+      }
+
+      final promo = Promotion.fromMap(match.first.id, match.first.data());
+      final subtotal = widget.cycles * widget.pricePerKg;
+
+      // Check eligibility locally (mirrors server-side checks)
+      if (promo.status != 'Active') {
+        setState(() { _promoError = 'This promo is no longer active'; _promoLoading = false; });
+        return;
+      }
+      if (promo.minimumOrderAmount > 0 && subtotal < promo.minimumOrderAmount) {
+        setState(() { _promoError = 'Minimum transaction: ₱${promo.minimumOrderAmount.toStringAsFixed(0)}'; _promoLoading = false; });
+        return;
+      }
+      if (promo.startDate != null && DateTime.now().isBefore(promo.startDate!)) {
+        setState(() { _promoError = 'This promo is not yet active'; _promoLoading = false; });
+        return;
+      }
+      if (promo.endDate != null && DateTime.now().isAfter(promo.endDate!)) {
+        setState(() { _promoError = 'This promo has expired'; _promoLoading = false; });
+        return;
+      }
+
+      setState(() { _appliedPromo = promo; _promoLoading = false; _promoError = null; });
+    } catch (e) {
+      setState(() { _promoError = 'Failed to validate promo'; _promoLoading = false; });
+    }
+  }
+
+  void _removePromo() {
+    setState(() { _appliedPromo = null; _promoController.clear(); _promoError = null; });
   }
 
   void _createOrderAndProceed() async {
@@ -125,8 +232,25 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     }
 
     final subtotal = widget.cycles * widget.pricePerKg;
-    final effectiveDeliveryFee = _deliveryMethod == 'Pickup' ? _deliveryFee : 0;
-    final total = subtotal + widget.soapTotal + effectiveDeliveryFee;
+    final effectiveDeliveryFee = _deliveryMethod == 'Pickup' ? _deliveryFee : 0.0;
+
+    // Use EngagementPricingEngine for consistent pricing
+    final pricing = EngagementPricingEngine.calculate(
+      actualWeight: widget.weight,
+      pricing: ServicePricing(
+        id: widget.serviceId,
+        name: widget.serviceName,
+        pricePerLoad: widget.pricePerKg,
+      ),
+      deliveryFee: effectiveDeliveryFee,
+      soapTotal: widget.soapTotal,
+      membership: _membershipPlan,
+      promo: _appliedPromo,
+    );
+
+    final promoDiscount = pricing.promoDiscount;
+    final membershipDiscount = pricing.membershipDiscount;
+    final total = pricing.total;
 
     // Build proper OrderItemModel list
     final items = [
@@ -139,6 +263,34 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       ),
     ];
 
+    // BUG FIX: Build and persist delivery address
+    AddressModel? deliveryAddress;
+    if (_deliveryMethod == 'Pickup') {
+      final street = _useManualAddress
+          ? _manualStreetController.text.trim()
+          : _address;
+      final barangay = _useManualAddress
+          ? _manualBarangayController.text.trim()
+          : '';
+      final city = _useManualAddress
+          ? _manualCityController.text.trim()
+          : '';
+      // Additive snapshot: carry the customer's structured profile components
+      // (from Location Setup) onto the order without altering existing logic.
+      final profileAddress = user.address;
+      deliveryAddress = AddressModel(
+        street: street,
+        barangay: barangay,
+        city: city,
+        latitude: _latitude,
+        longitude: _longitude,
+        houseUnit: profileAddress?.houseUnit ?? '',
+        province: profileAddress?.province ?? '',
+        postalCode: profileAddress?.postalCode ?? '',
+        formattedAddress: profileAddress?.fullAddress ?? '',
+      );
+    }
+
     final orderId = await orderProvider.createOrder(
       userId: user.id,
       items: items,
@@ -150,6 +302,13 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       selectedSoaps: widget.selectedSoaps,
       notes: widget.notes,
       deliveryMethod: _deliveryMethod,
+      deliveryAddress: deliveryAddress,
+      customerName: user.name,
+      customerPhone: user.phone,
+      requestedPromoCode: _appliedPromo?.code,
+      promoDiscount: promoDiscount > 0 ? promoDiscount : null,
+      membershipDiscount: membershipDiscount > 0 ? membershipDiscount : null,
+      pricingBreakdown: pricing.toMap(),
     );
 
     setState(() => _isLoading = false);
@@ -160,7 +319,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         '/customer/payment',
         arguments: {
           'orderId': orderId,
-          'amount': total,
+          'amount': total < 0 ? 0 : total,
           'serviceName': widget.serviceName,
           'weight': widget.weight,
           'cycles': widget.cycles,
@@ -169,12 +328,15 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           'selectedSoaps': widget.selectedSoaps,
           'soapTotal': widget.soapTotal,
           'deliveryMethod': _deliveryMethod,
+          'promoDiscount': promoDiscount > 0 ? promoDiscount : null,
+          'promoCode': _appliedPromo?.code,
+          'membershipDiscount': membershipDiscount > 0 ? membershipDiscount : null,
         },
       );
     } else if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Failed to create order. Please try again.'),
+          content: Text('Failed to create transaction. Please try again.'),
           backgroundColor: Colors.red,
         ),
       );
@@ -184,8 +346,26 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   @override
   Widget build(BuildContext context) {
     final subtotal = widget.cycles * widget.pricePerKg;
-    final effectiveDeliveryFee = _deliveryMethod == 'Pickup' ? _deliveryFee : 0;
-    final total = subtotal + widget.soapTotal + effectiveDeliveryFee;
+    final effectiveDeliveryFee = _deliveryMethod == 'Pickup' ? _deliveryFee : 0.0;
+
+    // Use EngagementPricingEngine for consistent pricing
+    final pricing = EngagementPricingEngine.calculate(
+      actualWeight: widget.weight,
+      pricing: ServicePricing(
+        id: widget.serviceId,
+        name: widget.serviceName,
+        pricePerLoad: widget.pricePerKg,
+      ),
+      deliveryFee: effectiveDeliveryFee,
+      soapTotal: widget.soapTotal,
+      membership: _membershipPlan,
+      promo: _appliedPromo,
+    );
+
+    final promoDiscount = pricing.promoDiscount;
+    final membershipDiscount = pricing.membershipDiscount;
+    _membershipDiscount = membershipDiscount;
+    final total = pricing.total;
 
     return Scaffold(
       appBar: AppBar(title: Text('Checkout - ${widget.serviceName}')),
@@ -204,7 +384,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text(
-                            'Order Summary',
+                            'Transaction Summary',
                             style: TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
@@ -268,6 +448,88 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     ),
                   ),
                   const SizedBox(height: 16),
+                  // ── Promo Code ──
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Promo Code',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          if (_appliedPromo != null) ...[
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.green.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.green),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.check_circle, color: Colors.green, size: 20),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          _appliedPromo!.code,
+                                          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green),
+                                        ),
+                                        Text(
+                                          _appliedPromo!.type == 'fixed'
+                                              ? '₱${_appliedPromo!.value.toStringAsFixed(0)} off'
+                                              : '${_appliedPromo!.value.toStringAsFixed(0)}% off',
+                                          style: const TextStyle(fontSize: 12, color: Colors.grey),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  TextButton(
+                                    onPressed: _removePromo,
+                                    child: const Text('Remove', style: TextStyle(color: Colors.red)),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ] else ...[
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextField(
+                                    controller: _promoController,
+                                    decoration: InputDecoration(
+                                      hintText: 'Enter promo code',
+                                      border: const OutlineInputBorder(),
+                                      isDense: true,
+                                      errorText: _promoError,
+                                    ),
+                                    textCapitalization: TextCapitalization.characters,
+                                    onSubmitted: (_) => _applyPromoCode(),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                FilledButton(
+                                  onPressed: _promoLoading ? null : _applyPromoCode,
+                                  child: _promoLoading
+                                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                                      : const Text('Apply'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
                   // Collection Method
                   Card(
                     child: Padding(
@@ -323,43 +585,101 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text(
-                              'Pickup Location',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 12),
                             Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                const Icon(
-                                  Icons.location_on,
-                                  color: Color(0xFF1565C0),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    _address.isNotEmpty &&
-                                            _address != 'Unable to get address'
-                                        ? _address
-                                        : _address == 'Unable to get address'
-                                        ? 'Address unavailable - location detected (${_latitude.toStringAsFixed(4)}, ${_longitude.toStringAsFixed(4)})'
-                                        : 'Getting location...',
-                                    style: const TextStyle(color: Colors.grey),
+                                const Text(
+                                  'Pickup Location',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
                                   ),
                                 ),
+                                if (_latitude != 0 || _useManualAddress)
+                                  TextButton(
+                                    onPressed: () => setState(() {
+                                      _useManualAddress = !_useManualAddress;
+                                    }),
+                                    child: Text(
+                                      _useManualAddress
+                                          ? 'Use GPS'
+                                          : 'Enter manually',
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                  ),
                               ],
                             ),
-                            const SizedBox(height: 8),
-                            _buildSummaryRow(
-                              'Distance from Shop',
-                              '${_distance.toStringAsFixed(1)} km',
-                            ),
-                            _buildSummaryRow(
-                              'Delivery Fee',
-                              CurrencyHelper.formatWhole(_deliveryFee),
-                            ),
+                            const SizedBox(height: 12),
+                            if (!_useManualAddress) ...[
+                              Row(
+                                children: [
+                                  const Icon(
+                                    Icons.location_on,
+                                    color: Color(0xFF1565C0),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      _address.isNotEmpty &&
+                                              _address != 'Unable to get address' &&
+                                              !_address.contains('unavailable')
+                                          ? _address
+                                          : 'Getting location...',
+                                      style: const TextStyle(color: Colors.grey),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              _buildSummaryRow(
+                                'Distance from Shop',
+                                '${_distance.toStringAsFixed(1)} km',
+                              ),
+                              _buildSummaryRow(
+                                'Delivery Fee',
+                                CurrencyHelper.formatWhole(_deliveryFee),
+                              ),
+                            ] else ...[
+                              // Manual address entry fields
+                              TextField(
+                                controller: _manualStreetController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Street Address',
+                                  hintText: 'e.g. 123 Main St, Sabalo',
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: _manualBarangayController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Barangay',
+                                  hintText: 'e.g. Dagat-Dagatan',
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: _manualCityController,
+                                decoration: const InputDecoration(
+                                  labelText: 'City',
+                                  hintText: 'e.g. Caloocan City',
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              const Text(
+                                'Please enter your complete address for pickup.',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey,
+                                  fontStyle: FontStyle.italic,
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),
@@ -416,28 +736,43 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                       ),
                     ),
                   const SizedBox(height: 16),
-                  // Total
+                  // Discount & Total
                   Card(
                     color: const Color(0xFF1565C0).withValues(alpha: 0.1),
                     child: Padding(
                       padding: const EdgeInsets.all(16),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      child: Column(
                         children: [
-                          const Text(
-                            'Total Amount:',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
+                          if (promoDiscount > 0)
+                            _buildSummaryRow(
+                              'Promo Discount (${_appliedPromo!.code})',
+                              '-${CurrencyHelper.formatSimple(promoDiscount)}',
                             ),
-                          ),
-                          Text(
-                            CurrencyHelper.formatSimple(total),
-                            style: const TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF1565C0),
+                          if (membershipDiscount > 0)
+                            _buildSummaryRow(
+                              'Membership Discount (${_membershipPlan!.name})',
+                              '-${CurrencyHelper.formatSimple(membershipDiscount)}',
                             ),
+                          if (promoDiscount > 0 || membershipDiscount > 0) const Divider(),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text(
+                                'Total Amount:',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              Text(
+                                CurrencyHelper.formatSimple(total < 0 ? 0 : total),
+                                style: const TextStyle(
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF1565C0),
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
@@ -445,7 +780,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                   ),
                   const SizedBox(height: 24),
                   CustomButton(
-                    text: 'Place Order & Proceed to Payment',
+                    text: 'Place Transaction & Proceed to Payment',
                     onPressed: _createOrderAndProceed,
                   ),
                 ],

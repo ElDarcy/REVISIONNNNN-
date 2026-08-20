@@ -69,8 +69,8 @@ class Validators {
     if (value == null || value.isEmpty) {
       return 'Reference number is required';
     }
-    if (value.length < 10) {
-      return 'Reference number must be at least 10 digits';
+    if (!RegExp(r'^\d{13}$').hasMatch(value)) {
+      return 'Reference number must be exactly 13 digits';
     }
     return null;
   }

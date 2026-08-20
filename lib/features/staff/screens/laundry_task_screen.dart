@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../models/order_load_model.dart';
+import '../../../models/order_model.dart';
 import '../../../providers/order_provider.dart';
 import '../../../providers/machine_provider.dart';
 import '../../../engines/order_status_flow_engine.dart';
@@ -46,6 +47,9 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
     });
   }
 
+  Stream<OrderModel?> _streamOrder() =>
+      context.read<OrderProvider>().streamOrderById(widget.orderId);
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -59,9 +63,15 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
               Navigator.of(context).popUntil((route) => route.isFirst),
         ),
       ),
-      body: StreamBuilder<OrderLoadModel?>(
-        stream: _streamLoad(),
-        builder: (context, snapshot) {
+      body: StreamBuilder<OrderModel?>(
+        stream: _streamOrder(),
+        builder: (context, orderSnap) {
+          final order = orderSnap.data;
+          final displayId = order?.displayNumber ??
+              'Transaction #${widget.orderId.substring(0, 6).toUpperCase()}';
+          return StreamBuilder<OrderLoadModel?>(
+            stream: _streamLoad(),
+            builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
@@ -114,7 +124,7 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildLoadCard(load),
+                _buildLoadCard(load, displayId),
                 const SizedBox(height: 16),
                 _buildMachineInfoCard(load),
                 const SizedBox(height: 16),
@@ -130,11 +140,13 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
             ),
           );
         },
-      ),
-    );
+      );
+    },
+  ),
+);
   }
 
-  Widget _buildLoadCard(OrderLoadModel load) {
+  Widget _buildLoadCard(OrderLoadModel load, String displayId) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -145,8 +157,7 @@ class _LaundryTaskScreenState extends State<LaundryTaskScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  'Order ${load.orderId.substring(0, 6).toUpperCase()} · '
-                  'Load ${load.loadNumber}',
+                  '$displayId · Load ${load.loadNumber}',
                   style: const TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.bold,

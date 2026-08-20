@@ -14,6 +14,8 @@ class PaymentScreen extends StatelessWidget {
   final List<Map<String, dynamic>> selectedSoaps;
   final double soapTotal;
   final String deliveryMethod;
+  final double? promoDiscount;
+  final String? promoCode;
 
   const PaymentScreen({
     super.key,
@@ -27,10 +29,13 @@ class PaymentScreen extends StatelessWidget {
     this.selectedSoaps = const [],
     this.soapTotal = 0,
     this.deliveryMethod = 'Pickup',
+    this.promoDiscount,
+    this.promoCode,
   });
 
   @override
   Widget build(BuildContext context) {
+    final isPickup = deliveryMethod == 'Pickup';
     return Scaffold(
       appBar: AppBar(title: const Text('Payment')),
       body: SingleChildScrollView(
@@ -68,7 +73,7 @@ class PaymentScreen extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Order Summary',
+                      'Transaction Summary',
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
@@ -128,6 +133,12 @@ class PaymentScreen extends StatelessWidget {
                         'Delivery Fee',
                         CurrencyHelper.formatWhole(deliveryFee),
                       ),
+                    if (promoDiscount != null && promoDiscount! > 0) ...[
+                      _buildRow(
+                        'Promo Discount${promoCode != null ? ' ($promoCode)' : ''}',
+                        '-${CurrencyHelper.formatSimple(promoDiscount!)}',
+                      ),
+                    ],
                     const Divider(),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -222,7 +233,7 @@ class PaymentScreen extends StatelessWidget {
             ),
             const SizedBox(height: 12),
 
-            // Cash on Pickup Card
+            // Cash Card (Pickup vs Drop-off)
             Card(
               child: InkWell(
                 borderRadius: BorderRadius.circular(12),
@@ -244,21 +255,23 @@ class PaymentScreen extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 16),
-                      const Expanded(
+                      Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Cash on Pickup',
-                              style: TextStyle(
+                              isPickup ? 'Cash on Pickup' : 'Cash on Drop off',
+                              style: const TextStyle(
                                 fontWeight: FontWeight.bold,
                                 fontSize: 16,
                               ),
                             ),
-                            SizedBox(height: 2),
+                            const SizedBox(height: 2),
                             Text(
-                              'Pay when we pick up your laundry',
-                              style: TextStyle(
+                              isPickup
+                                  ? 'Pay when we pick up your laundry'
+                                  : 'Pay in cash when you drop off your laundry at the shop',
+                              style: const TextStyle(
                                 color: Colors.grey,
                                 fontSize: 13,
                               ),
@@ -310,24 +323,29 @@ class PaymentScreen extends StatelessWidget {
     // Capture the screen's context (NOT the dialog's) so we can safely
     // navigate back to home after the dialog is dismissed.
     final screenContext = context;
+    final isPickup = deliveryMethod == 'Pickup';
+    final methodLabel = isPickup ? 'Cash on Pickup' : 'Cash on Drop off';
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        title: const Row(
+        title: Row(
           children: [
-            Icon(Icons.money, color: Colors.green, size: 28),
-            SizedBox(width: 12),
-            Text('Cash on Pickup'),
+            const Icon(Icons.money, color: Colors.green, size: 28),
+            const SizedBox(width: 12),
+            Text(methodLabel),
           ],
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'You selected Cash on Pickup. '
-              'You will pay the full amount when our staff picks up your laundry.',
+            Text(
+              isPickup
+                  ? 'You selected Cash on Pickup. '
+                      'You will pay the full amount when our staff picks up your laundry.'
+                  : 'You selected Cash on Drop off. '
+                      'You will pay the full amount in cash when you drop off your laundry at the shop.',
             ),
             const SizedBox(height: 12),
             Container(
@@ -366,38 +384,41 @@ class PaymentScreen extends StatelessWidget {
             onPressed: () async {
               Navigator.pop(context);
 
-              // Update payment status to Cash on Pickup
+              // BUG FIX: Cash uses 'Pending Collection' (collected by staff).
+              // GCash uses 'Pending Verification' (admin verifies screenshot).
               final orderProvider = screenContext.read<OrderProvider>();
               await orderProvider.updateOrderPaymentMethod(
                 orderId,
-                'Cash on Pickup',
-                'Pending',
+                methodLabel,
+                'Pending Collection',
               );
 
               if (screenContext.mounted) {
                 ScaffoldMessenger.of(screenContext).showSnackBar(
-                  const SnackBar(
+                  SnackBar(
                     content: Row(
                       children: [
-                        Icon(Icons.check_circle, color: Colors.white),
-                        SizedBox(width: 8),
+                        const Icon(Icons.check_circle, color: Colors.white),
+                        const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            'Order placed! Pay cash when we pickup your laundry.',
+                            isPickup
+                                ? 'Transaction created! Pay cash when we pickup your laundry.'
+                                : 'Transaction created! Pay cash when you drop off your laundry.',
                           ),
                         ),
                       ],
                     ),
                     backgroundColor: Colors.green,
-                    duration: Duration(seconds: 4),
+                    duration: const Duration(seconds: 4),
                   ),
                 );
                 Navigator.pushNamed(screenContext, '/customer/home');
               }
             },
-            child: const Text(
-              'Confirm Cash on Pickup',
-              style: TextStyle(color: Colors.white),
+            child: Text(
+              'Confirm $methodLabel',
+              style: const TextStyle(color: Colors.white),
             ),
           ),
         ],

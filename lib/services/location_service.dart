@@ -8,14 +8,23 @@ typedef ReverseGeocode = Future<List<Placemark>> Function(
   double longitude,
 );
 
+/// Forward geocoding (address -> coordinates). The platform geocoder can
+/// return multiple candidate matches for an ambiguous address.
+typedef ForwardGeocode = Future<List<Location>> Function(String address);
+
 class LocationService {
-  LocationService({ReverseGeocode? reverseGeocode})
-      : _reverseGeocode = reverseGeocode ?? placemarkFromCoordinates;
+  LocationService({
+    ReverseGeocode? reverseGeocode,
+    ForwardGeocode? forwardGeocode,
+  }) : _reverseGeocode = reverseGeocode ?? placemarkFromCoordinates,
+       _forwardGeocode = forwardGeocode ?? locationFromAddress;
 
   static const _reverseGeocodeTimeout = Duration(seconds: 4);
   static const _reverseGeocodeAttempts = 2;
+  static const _forwardGeocodeTimeout = Duration(seconds: 6);
 
   final ReverseGeocode _reverseGeocode;
+  final ForwardGeocode _forwardGeocode;
 
   static bool isValidCoordinate(double latitude, double longitude) {
     return latitude.isFinite &&
@@ -47,8 +56,12 @@ class LocationService {
       );
     }
 
+    // BUG FIX: Add timeout so GPS failure never blocks checkout
     return Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.high,
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        timeLimit: Duration(seconds: 8),
+      ),
     );
   }
 
@@ -82,12 +95,88 @@ class LocationService {
     }
   }
 
-  Future<Map<String, dynamic>> getLocationDetails() async {
+Future<Map<String, dynamic>> getLocationDetails() async {
     final position = await getCurrentLocation();
     return resolveLocationDetails(
       latitude: position.latitude,
       longitude: position.longitude,
     );
+  }
+
+  /// Resolves a coordinate into structured address components
+  /// (street/barangay/city/province/postalCode) for form pre-fill. Best-effort.
+  Future<Map<String, String>> getAddressComponents(
+    double latitude,
+    double longitude,
+  ) async {
+    const empty = {
+      'street': '',
+      'barangay': '',
+      'city': '',
+      'province': '',
+      'postalCode': '',
+    };
+    if (!isValidCoordinate(latitude, longitude)) return empty;
+    try {
+      for (var attempt = 0; attempt < _reverseGeocodeAttempts; attempt++) {
+        try {
+          final placemarks = await _reverseGeocode(latitude, longitude)
+              .timeout(_reverseGeocodeTimeout);
+          if (placemarks.isEmpty) continue;
+          final p = placemarks.first;
+          return {
+            'street': p.street?.trim() ?? '',
+            'barangay': p.subLocality?.trim() ?? '',
+            'city': p.locality?.trim() ?? '',
+            'province': p.administrativeArea?.trim() ?? '',
+            'postalCode': p.postalCode?.trim() ?? '',
+          };
+        } on TimeoutException {
+          // Retry once before returning empty components.
+        } catch (_) {
+          // Transient platform geocoder failure; second attempt next loop.
+        }
+      }
+      return empty;
+    } catch (_) {
+      return empty;
+    }
+  }
+
+  /// Resolves a manually-entered address into candidate coordinates.
+  ///
+  /// Returns a de-duplicated list of `{latitude, longitude}` candidates from
+  /// the platform geocoder. An empty list means the address could not be
+  /// resolved. Multiple candidates must be shown to the customer for explicit
+  /// selection — the first result is never silently chosen.
+  Future<List<Map<String, double>>> getCoordinatesFromAddress(
+    String address,
+  ) async {
+    final trimmed = address.trim();
+    if (trimmed.isEmpty) return const [];
+
+    try {
+      final locations = await _forwardGeocode(trimmed)
+          .timeout(_forwardGeocodeTimeout);
+      if (locations.isEmpty) return const [];
+
+      final seen = <String>{};
+      final candidates = <Map<String, double>>[];
+      for (final loc in locations) {
+        if (!isValidCoordinate(loc.latitude, loc.longitude)) continue;
+        final key = '${loc.latitude.toStringAsFixed(5)},'
+            '${loc.longitude.toStringAsFixed(5)}';
+        if (seen.add(key)) {
+          candidates.add({'latitude': loc.latitude, 'longitude': loc.longitude});
+        }
+      }
+      return candidates;
+    } catch (_) {
+      // Platform geocoders are best-effort; the caller must surface the
+      // unresolved state to the customer (retry or use GPS) rather than
+      // fabricate coordinates.
+      return const [];
+    }
   }
 
   Future<Map<String, dynamic>> resolveLocationDetails({

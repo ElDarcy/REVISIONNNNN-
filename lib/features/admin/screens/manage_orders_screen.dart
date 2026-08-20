@@ -3,23 +3,35 @@ import 'package:provider/provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/utils/currency_helper.dart';
+import '../../../core/utils/date_helper.dart';
+import '../../../core/utils/formatters.dart';
+import '../../../core/utils/status_display_helper.dart';
 import '../../../core/widgets/loading_widget.dart';
 import '../../../core/widgets/empty_state.dart';
+import '../../../core/widgets/staff_name_widget.dart';
 import '../../../providers/order_provider.dart';
 import '../../../providers/auth_provider.dart';
 import '../../../models/order_model.dart';
+import '../../../models/laundry_status_model.dart';
 import '../../../models/user_model.dart';
 import '../../../engines/order_status_flow_engine.dart';
+import '../../../engines/order_scheduling_gate.dart';
 import '../../../engines/staff_assignment_engine.dart';
-import '../../../services/transaction_proof_service.dart';
 
-class ManageOrdersScreen extends StatelessWidget {
+class ManageOrdersScreen extends StatefulWidget {
   const ManageOrdersScreen({super.key});
+
+  @override
+  State<ManageOrdersScreen> createState() => _ManageOrdersScreenState();
+}
+
+class _ManageOrdersScreenState extends State<ManageOrdersScreen> {
+  String _filterType = 'All';
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Manage Orders')),
+      appBar: AppBar(title: const Text('Manage Transactions')),
       body: StreamBuilder(
         stream: context.read<OrderProvider>().streamAllOrders(),
         builder: (screenContext, snapshot) {
@@ -27,7 +39,13 @@ class ManageOrdersScreen extends StatelessWidget {
             return const Center(child: CircularProgressIndicator());
           }
 
-          final orders = snapshot.data ?? [];
+          var orders = snapshot.data ?? [];
+
+          if (_filterType == 'Walk-in') {
+            orders = orders.where((o) => o.orderType == 'walk_in').toList();
+          } else if (_filterType == 'Online') {
+            orders = orders.where((o) => o.orderType != 'walk_in').toList();
+          }
 
           if (orders.isEmpty) {
             return const Center(
@@ -36,233 +54,476 @@ class ManageOrdersScreen extends StatelessWidget {
                 children: [
                   Icon(Icons.receipt_long, size: 64, color: Colors.grey),
                   SizedBox(height: 16),
-                  Text('No orders found', style: TextStyle(fontSize: 18)),
+                  Text('No transactions found', style: TextStyle(fontSize: 18)),
                 ],
               ),
             );
           }
 
-          return ListView.builder(
-            padding: const EdgeInsets.all(8),
-            itemCount: orders.length,
-            itemBuilder: (itemContext, index) {
-              final order = orders[index];
-              final distance = order.distanceKm ?? 0.0;
-              return Card(
-                child: ExpansionTile(
-                  leading: CircleAvatar(
-                    backgroundColor: _getStatusColor(
-                      order.status.value,
-                    ).withValues(alpha: 0.1),
-                    child: Icon(
-                      Icons.receipt,
-                      color: _getStatusColor(order.status.value),
-                    ),
-                  ),
-                  title: Text(
-                    'Order #${order.id.substring(0, 6).toUpperCase()}',
-                  ),
-                  subtitle: Text(
-                    'Status: ${order.status.value} | Total: ${CurrencyHelper.formatWhole(order.totalAmount)}',
-                  ),
+          return Column(
+            children: [
+              // Filter Tabs
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Row(
                   children: [
-                    Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Weight: ${order.weight} kg'),
-                          Text(
-                            'Delivery Fee: ${CurrencyHelper.formatWhole(order.deliveryFee)}',
-                          ),
-                          Text(
-                            'Payment: ${order.paymentMethod} - ${order.paymentStatus}',
-                          ),
-                          Text('Distance: ${distance.toStringAsFixed(1)} km'),
-                          if (order.weightStatus == 'submitted')
-                            Padding(
-                              padding: const EdgeInsets.only(top: 12),
-                              child: SizedBox(
-                                width: double.infinity,
-                                child: OutlinedButton.icon(
-                                  icon: const Icon(Icons.monitor_weight_outlined),
-                                  label: const Text('Review Weight Verification'),
-                                  onPressed: () => _showWeightReview(
-                                    screenContext,
-                                    order,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          // Unified staff assignment action.
-                          // Shown if no staff is assigned yet and skips rejected orders.
-                          if (!_isStaffAssigned(order) &&
-                              order.paymentStatus != 'Rejected')
-                            Padding(
-                              padding: const EdgeInsets.only(top: 12),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: ElevatedButton.icon(
-                                      icon: const Icon(
-                                        Icons.check_circle,
-                                        color: Colors.white,
-                                        size: 18,
-                                      ),
-                                      label: Text(
-                                        order.approvedAt == null
-                                            ? 'Approve & Assign Staff'
-                                            : 'Assign Staff',
-                                        style: const TextStyle(color: Colors.white),
-                                      ),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: AppColors.success,
-                                      ),
-                                      onPressed: () =>
-                                          _showApproveAndAssignDialog(
-                                            screenContext,
-                                            order,
-                                          ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          if (_isStaffAssigned(order))
-                            Text(
-                              'Assigned to: ${_formatId(order.assignedTo ?? order.staffId)}',
-                            ),
-                        ],
-                      ),
+                    _buildFilterChip('All'),
+                    const SizedBox(width: 8),
+                    _buildFilterChip('Walk-in'),
+                    const SizedBox(width: 8),
+                    _buildFilterChip('Online'),
+                    const Spacer(),
+                    Text(
+                      '${orders.length} transaction(s)',
+                      style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
                     ),
                   ],
                 ),
-              );
-            },
+              ),
+              Expanded(
+                child: ListView.builder(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  itemCount: orders.length,
+                  itemBuilder: (itemContext, index) {
+                    final order = orders[index];
+                    return Card(
+                      child: ExpansionTile(
+                        leading: CircleAvatar(
+                          backgroundColor: _getStatusColor(
+                            order.status.value,
+                          ).withValues(alpha: 0.1),
+                          child: Icon(
+                            Icons.receipt,
+                            color: _getStatusColor(order.status.value),
+                          ),
+                        ),
+                        title: Text(order.displayNumber),
+                        subtitle: Text(
+                          'Status: ${order.status.value} | Total: ${CurrencyHelper.formatWhole(order.totalAmount)}',
+                        ),
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // ── Transaction Info ──
+                                _buildInfoRow(Icons.receipt, 'Transaction', order.displayNumber),
+                                if (order.customerName != null && order.customerName!.isNotEmpty)
+                                  _buildInfoRow(Icons.person, 'Customer', Formatters.toTitleCase(order.customerName!)),
+                                if (order.customerPhone != null && order.customerPhone!.isNotEmpty)
+                                  _buildInfoRow(Icons.phone, 'Phone', order.customerPhone!),
+                                _buildInfoRow(Icons.local_laundry_service, 'Service', order.serviceType ?? 'Wash & Dry'),
+                                _buildInfoRow(Icons.category, 'Type', order.orderType == 'walk_in' ? 'Walk-in' : 'Online'),
+                                _buildInfoRow(Icons.calendar_today, 'Date', DateHelper.formatDateTime(order.createdAt)),
+                                if (order.deliveryMethod == 'Delivery' && order.deliveryAddress != null)
+                                  _buildInfoRow(Icons.location_on, 'Address', order.deliveryAddress!.fullAddress.isNotEmpty
+                                      ? order.deliveryAddress!.fullAddress
+                                      : order.deliveryAddress!.street),
+                                _buildInfoRow(Icons.attach_money, 'Amount', CurrencyHelper.formatWhole(order.totalAmount)),
+                                _buildInfoRow(
+                                  Icons.payment,
+                                  'Payment',
+                                  '${order.paymentMethod} — ${StatusDisplayHelper.paymentStatusDisplay(order.paymentStatus)}',
+                                ),
+                                if (order.outstandingBalance > 0)
+                                  _buildInfoRow(
+                                    Icons.error_outline,
+                                    'Balance Due',
+                                    CurrencyHelper.formatWhole(order.outstandingBalance),
+                                  )
+                                else if (order.pendingRefund > 0 && !order.refundSettled)
+                                  _buildInfoRow(
+                                    Icons.currency_exchange,
+                                    'Refund Due',
+                                    CurrencyHelper.formatWhole(order.pendingRefund),
+                                  ),
+                                if (order.paymentMethod != 'GCash' &&
+                                    (order.remittanceStatus == 'Pending Remittance' || order.remittanceStatus == 'Remitted'))
+                                  _buildInfoRow(
+                                    Icons.account_balance,
+                                    'Remittance',
+                                    order.remittanceStatus == 'Remitted'
+                                        ? 'Remitted'
+                                        : 'Pending Remittance',
+                                  ),
+                                if (order.remittanceStatus == 'Pending Remittance' || order.remittanceStatus == 'Remitted') ...[
+                                  if (order.remittedBy != null && order.remittedBy!.isNotEmpty)
+                                    StaffNameWidget(
+                                      staffId: order.remittedBy,
+                                      prefix: 'Remitted by: ',
+                                    ),
+                                  if (order.confirmedBy != null && order.confirmedBy!.isNotEmpty)
+                                    StaffNameWidget(
+                                      staffId: order.confirmedBy,
+                                      prefix: 'Confirmed by: ',
+                                    ),
+                                ],
+                                if (order.distanceKm != null && order.distanceKm! > 0)
+                                  _buildInfoRow(Icons.straighten, 'Distance', '${order.distanceKm!.toStringAsFixed(1)} km'),
+                                const Divider(height: 24),
+                                // ── Weight Verification ──
+                                _buildInfoRow(
+                                  Icons.monitor_weight_outlined,
+                                  'Declared Weight',
+                                  '${order.weight} kg',
+                                ),
+                                if (order.hasVerifiedActualWeight)
+                                  _buildInfoRow(
+                                    Icons.check_circle_outline,
+                                    'Actual Weight',
+                                    '${order.actualWeight} kg',
+                                  ),
+                                _buildInfoRow(
+                                  Icons.fact_check,
+                                  'Weight Status',
+                                  order.weightStatus ?? 'pending',
+                                ),
+                                if (order.weightVerifiedBy != null && order.weightVerifiedBy!.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 4),
+                                    child: Row(
+                                      children: [
+                                        const Icon(Icons.person_outline, size: 16, color: Colors.grey),
+                                        const SizedBox(width: 8),
+                                        StaffNameWidget(
+                                          staffId: order.weightVerifiedBy!,
+                                          prefix: 'Verified by: ',
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                if (order.weightVerifiedAt != null)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 2),
+                                    child: Row(
+                                      children: [
+                                        const Icon(Icons.access_time, size: 16, color: Colors.grey),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          DateHelper.formatDateTime(order.weightVerifiedAt!),
+                                          style: const TextStyle(fontSize: 13),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                if (order.weightVerificationNote != null && order.weightVerificationNote!.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 2),
+                                    child: Row(
+                                      children: [
+                                        const Icon(Icons.note_alt_outlined, size: 16, color: Colors.grey),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            order.weightVerificationNote!,
+                                            style: const TextStyle(fontSize: 13),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                // ── Confirm Remittance ──
+                                if (order.paymentMethod != 'GCash' &&
+                                    order.paymentStatus == 'Verified' &&
+                                    order.remittanceStatus == 'Pending Remittance')
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 12),
+                                    child: SizedBox(
+                                      width: double.infinity,
+                                      child: ElevatedButton.icon(
+                                        icon: const Icon(Icons.account_balance),
+                                        label: const Text('Confirm Remittance'),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: AppColors.success,
+                                          foregroundColor: Colors.white,
+                                        ),
+                                        onPressed: () => _confirmRemittance(screenContext, order),
+                                      ),
+                                    ),
+                                  ),
+                                // ── Review GCash Payment ──
+                                // Lets the admin approve a pending GCash payment
+                                // straight from the transaction, which is the
+                                // gate that lets the order progress to scheduling.
+                                if (order.paymentMethod == 'GCash' &&
+                                    order.paymentStatus == 'Pending Verification')
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 12),
+                                    child: SizedBox(
+                                      width: double.infinity,
+                                      child: ElevatedButton.icon(
+                                        icon: const Icon(Icons.verified_user_outlined),
+                                        label: const Text('Review GCash Payment'),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: AppColors.processingColor,
+                                          foregroundColor: Colors.white,
+                                        ),
+                                        onPressed: () => Navigator.pushNamed(
+                                          context,
+                                          '/admin/payments',
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                // Manual staff assignment (admin exception tool — normal flow auto-assigns
+                                // after payment verification). Hidden while the order is not in the
+                                // laundry-eligible phase (e.g. a pickup whose laundry is not at the shop
+                                // yet — only the delivery staff may be assigned for that leg).
+                                if (!_isStaffAssigned(order) &&
+                                    order.paymentStatus != 'Rejected' &&
+                                    _canAssignLaundryStaff(order))
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 12),
+                                    child: Row(
+                                      children: [
+                                        Expanded(
+                                          child: ElevatedButton.icon(
+                                            icon: const Icon(Icons.person_add_alt_1, color: Colors.white, size: 18),
+                                            label: const Text(
+                                              'Assign Staff',
+                                              style: TextStyle(color: Colors.white),
+                                            ),
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor: AppColors.success,
+                                            ),
+                                            onPressed: () => _showAssignStaffDialog(screenContext, order),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                if (_isStaffAssigned(order))
+                                  StaffNameWidget(
+                                    staffId: order.assignedTo ?? order.staffId,
+                                    prefix: 'Assigned to: ',
+                                  ),
+                                // ── Cancel Transaction (admin) ──
+                                if (!order.status.isFinished &&
+                                    order.status != LaundryStatus.cancelled)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 12),
+                                    child: SizedBox(
+                                      width: double.infinity,
+                                      child: OutlinedButton.icon(
+                                        icon: const Icon(
+                                          Icons.cancel_outlined,
+                                          size: 18,
+                                        ),
+                                        label: const Text('Cancel Transaction'),
+                                        style: OutlinedButton.styleFrom(
+                                          foregroundColor: AppColors.error,
+                                          side: const BorderSide(
+                                            color: AppColors.error,
+                                          ),
+                                        ),
+                                        onPressed: () => _confirmAdminCancel(
+                                          screenContext,
+                                          order,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
           );
         },
       ),
     );
   }
 
-  Future<void> _showWeightReview(
-    BuildContext context,
-    OrderModel order,
-  ) async {
-    final noteController = TextEditingController();
-    final adminId = context.read<AuthProvider>().user?.id ?? '';
-    final proofId = order.weightProofId;
-    final proof = proofId == null
-        ? Future.value(null)
-        : TransactionProofService().loadImageBytes(
-            proofId: proofId,
-            orderId: order.id,
-          );
+  Widget _buildFilterChip(String label) {
+    final selected = _filterType == label;
+    return FilterChip(
+      label: Text(label, style: TextStyle(
+        fontSize: 13,
+        color: selected ? Colors.white : Colors.grey.shade700,
+        fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+      )),
+      selected: selected,
+      onSelected: (_) => setState(() => _filterType = label),
+      selectedColor: AppColors.primary,
+      checkmarkColor: Colors.white,
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
+  }
 
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Review Weight Verification'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Declared: ${order.displayedEstimatedWeight.toStringAsFixed(2)} kg'),
-              Text('Measured: ${order.actualWeight?.toStringAsFixed(2) ?? 'N/A'} kg'),
-              const SizedBox(height: 12),
-              FutureBuilder(
-                future: proof,
-                builder: (_, snapshot) {
-                  final bytes = snapshot.data;
-                  if (bytes == null) {
-                    return const Text('Scale proof is unavailable.');
-                  }
-                  return ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.memory(bytes),
-                  );
-                },
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: noteController,
-                maxLines: 2,
-                decoration: const InputDecoration(
-                  labelText: 'Review note (optional)',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          OutlinedButton(
-            onPressed: () => _reviewWeight(
-              context,
-              dialogContext,
-              order.id,
-              adminId,
-              false,
-              noteController.text,
-            ),
-            child: const Text('Reject'),
-          ),
-          ElevatedButton(
-            onPressed: () => _reviewWeight(
-              context,
-              dialogContext,
-              order.id,
-              adminId,
-              true,
-              noteController.text,
-            ),
-            child: const Text('Approve'),
+  Widget _buildInfoRow(IconData icon, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: Colors.grey),
+          const SizedBox(width: 8),
+          Text('$label: ', style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+          Expanded(
+            child: Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
           ),
         ],
       ),
     );
-    noteController.dispose();
   }
 
-  Future<void> _reviewWeight(
-    BuildContext context,
-    BuildContext dialogContext,
-    String orderId,
-    String adminId,
-    bool approved,
-    String note,
-  ) async {
-    final success = await context.read<OrderProvider>().verifyWeightVerification(
-          orderId: orderId,
-          adminId: adminId,
-          approved: approved,
-          note: note,
-        );
-    if (!dialogContext.mounted) return;
-    Navigator.pop(dialogContext);
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(success
-              ? 'Weight ${approved ? 'approved' : 'rejected'}.'
-              : 'Could not review the weight verification.'),
-          backgroundColor: success ? Colors.green : Colors.red,
+void _confirmRemittance(BuildContext context, OrderModel order) {
+    final amount = order.totalAmount;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Row(
+          children: [
+            Icon(Icons.account_balance, color: AppColors.success, size: 28),
+            SizedBox(width: 8),
+            Text('Confirm Remittance'),
+          ],
         ),
-      );
-    }
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Confirm that ₱${amount.toStringAsFixed(2)} cash has been physically received from:',
+              style: const TextStyle(fontSize: 15),
+            ),
+            const SizedBox(height: 8),
+            StaffNameWidget(
+              staffId: order.remittedBy,
+              prefix: 'Staff: ',
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final adminId = context.read<AuthProvider>().user?.id ?? '';
+              final success = await context.read<OrderProvider>().confirmRemittance(
+                orderId: order.id,
+                adminId: adminId,
+              );
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      success ? 'Remittance confirmed!' : 'Failed to confirm remittance.',
+                    ),
+                    backgroundColor: success ? AppColors.success : AppColors.error,
+                  ),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.success),
+            child: const Text('Confirm', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
   }
 
-  /// Opens the combined "Approve & Assign Staff" flow.
+  void _confirmAdminCancel(BuildContext screenContext, OrderModel order) {
+    final reasonController = TextEditingController();
+    showDialog(
+      context: screenContext,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Row(
+          children: [
+            Icon(Icons.cancel_outlined, color: AppColors.error, size: 28),
+            SizedBox(width: 8),
+            Text('Cancel Transaction'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Are you sure you want to cancel this transaction? This cannot be undone.',
+              style: TextStyle(fontSize: 15),
+            ),
+            if (order.pendingRefund > 0) ...[
+              const SizedBox(height: 8),
+              Text(
+                'A refund of ${CurrencyHelper.formatWhole(order.pendingRefund)} will be recorded for the customer.',
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.warning,
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            TextField(
+              controller: reasonController,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Reason (optional)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Keep Transaction'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx, true);
+              final adminId = ctx.read<AuthProvider>().user?.id ?? '';
+              final reason = reasonController.text.trim();
+              final success = await ctx.read<OrderProvider>().cancelOrder(
+                orderId: order.id,
+                cancelledBy: adminId,
+                reason: reason.isEmpty ? null : reason,
+                isAdmin: true,
+              );
+              if (ctx.mounted) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      success
+                          ? 'Transaction cancelled.'
+                          : 'Failed to cancel transaction.',
+                    ),
+                    backgroundColor: success ? AppColors.error : AppColors.error,
+                  ),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            child: const Text(
+              'Cancel Transaction',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Simple transaction approval — no staff selection.
+  /// Staff is auto-assigned by the system.
+  /// Opens the manual staff assignment flow (admin override).
   ///
   /// Fetches the available laundry staff, computes their current workload,
   /// recommends the least-loaded staff member, lets the admin select (or
-  /// override) a staff member, then confirms before approving + assigning.
-  void _showApproveAndAssignDialog(BuildContext screenContext, OrderModel order) {
+  /// override) a staff member, then confirms the assignment.
+  void _showAssignStaffDialog(BuildContext screenContext, OrderModel order) {
     final searchController = TextEditingController();
     final adminId = screenContext.read<AuthProvider>().user?.id ?? '';
 
@@ -271,7 +532,7 @@ class ManageOrdersScreen extends StatelessWidget {
       builder: (dialogContext) => StatefulBuilder(
         builder: (sContext, setDialogState) {
           return AlertDialog(
-            title: const Text('Approve & Assign Staff'),
+            title: const Text('Assign Staff (Override)'),
             content: SizedBox(
               width: double.maxFinite,
               child: Column(
@@ -281,7 +542,7 @@ class ManageOrdersScreen extends StatelessWidget {
                   _OrderSummary(order: order),
                   const SizedBox(height: 12),
                   const Text(
-                    'Select a staff member to approve & assign:',
+                    'Select a staff member to assign:',
                     style: TextStyle(color: Colors.grey, fontSize: 13),
                   ),
                   const SizedBox(height: 12),
@@ -324,7 +585,7 @@ class ManageOrdersScreen extends StatelessWidget {
           );
         },
       ),
-    );
+    ).then((_) => searchController.dispose());
   }
 
   /// Fetches all orders + delivery queue to compute workload data, then
@@ -339,7 +600,7 @@ class ManageOrdersScreen extends StatelessWidget {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const LoadingWidget(message: 'Preparing approval...'),
+      builder: (_) => const LoadingWidget(message: 'Preparing assignment...'),
     );
 
     try {
@@ -366,9 +627,9 @@ class ManageOrdersScreen extends StatelessWidget {
           ),
           title: const Row(
             children: [
-              Icon(Icons.check_circle, color: Colors.green, size: 28),
+              Icon(Icons.person_add_alt_1, color: Colors.green, size: 28),
               SizedBox(width: 12),
-              Text('Confirm Approval'),
+              Text('Confirm Staff Assignment'),
             ],
           ),
           content: Column(
@@ -377,13 +638,12 @@ class ManageOrdersScreen extends StatelessWidget {
             children: [
               Text(
                 'Service: ${OrderStatusFlowEngine.resolveServiceType(order)}\n'
-                'By approving this order:\n'
-                '• The order will be marked as Approved\n'
-                '• "${staff.name}" will be assigned to this order\n'
-                '• Laundry loads will be created (${order.weight} kg)\n'
-                '\nOrder Status: Approved\n'
-                'Assigned Staff: ${staff.name}\n'
-                '\nProceed with approval and assignment?',
+                'By assigning this transaction:\n'
+                '• "${staff.name}" will be assigned to this transaction\n'
+                '• Laundry processing starts once payment and the verified '
+                'weight are in place\n'
+                '\nAssigned Staff: ${staff.name}\n'
+                '\nProceed with assignment?',
               ),
               const SizedBox(height: 12),
               Text(
@@ -407,7 +667,7 @@ class ManageOrdersScreen extends StatelessWidget {
                 final orderProvider = context.read<OrderProvider>();
                 Navigator.pop(dialogContext);
 
-                final success = await orderProvider.approveAndAssignStaff(
+                final success = await orderProvider.assignStaff(
                   orderId: order.id,
                   adminId: adminId,
                   staffId: staff.id,
@@ -422,7 +682,7 @@ class ManageOrdersScreen extends StatelessWidget {
                         children: [
                           const Icon(Icons.check_circle, color: Colors.white),
                           const SizedBox(width: 8),
-                          Text('Order approved & assigned to ${staff.name}!'),
+                          Text('Staff assigned to ${order.displayNumber}!'),
                         ],
                       ),
                       backgroundColor: Colors.green,
@@ -433,8 +693,8 @@ class ManageOrdersScreen extends StatelessWidget {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                       content: Text(
-                        'Approval failed. The order may already be approved '
-                        'or staff assigned.',
+                        'Assignment failed. The transaction may already have '
+                        'a staff assigned.',
                       ),
                       backgroundColor: Colors.red,
                     ),
@@ -445,7 +705,7 @@ class ManageOrdersScreen extends StatelessWidget {
                 backgroundColor: AppColors.success,
               ),
               child: const Text(
-                'Approve & Assign',
+                'Assign Staff',
                 style: TextStyle(color: Colors.white),
               ),
             ),
@@ -457,7 +717,7 @@ class ManageOrdersScreen extends StatelessWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to prepare approval: $e'),
+            content: Text('Failed to prepare assignment: $e'),
             backgroundColor: Colors.red,
           ),
         );
@@ -498,13 +758,17 @@ class ManageOrdersScreen extends StatelessWidget {
     return order.assignedTo != null || order.staffId != null;
   }
 
-  String _formatId(String? id) {
-    if (id == null || id.isEmpty) return 'N/A';
-    return id.length > 8 ? id.substring(0, 8) : id;
+  /// A laundry staff may only be manually assigned once the order is in the
+  /// laundry-eligible phase — i.e. the pickup laundry is already at the shop
+  /// (and, for cash pickup, the cash was remitted). Before that, only the
+  /// delivery staff handles the pickup leg.
+  bool _canAssignLaundryStaff(OrderModel order) {
+    return OrderSchedulingGate.resolveAssignmentPhase(order.toMap()) ==
+        AssignmentPhase.laundry;
   }
 }
 
-/// A compact summary of the order being approved.
+/// A compact summary of the order being assigned.
 class _OrderSummary extends StatelessWidget {
   final OrderModel order;
 
@@ -523,7 +787,7 @@ class _OrderSummary extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Order #${order.id.substring(0, 6).toUpperCase()}',
+            order.displayNumber,
             style: const TextStyle(fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 4),

@@ -80,7 +80,18 @@ class AppConfig {
 
   // Payment Statuses
   static const String paymentPending = 'Pending Verification';
+  static const String paymentPendingCollection = 'Pending Collection';
   static const String paymentApproved = 'Approved';
   static const String paymentVerified = 'Verified';
   static const String paymentRejected = 'Rejected';
+
+  // Remittance Statuses
+  static const String remittancePending = 'Pending Remittance';
+  static const String remittanceConfirmed = 'Remitted';
+
+  /// Whether the payment method is cash-based (not GCash).
+  static bool isCashMethod(String? method) =>
+      method == 'Cash on Pickup' ||
+      method == 'Cash at Shop' ||
+      method == 'Cash on Drop off';
 }

@@ -139,9 +139,11 @@ class _WeightVerificationScreenState extends State<WeightVerificationScreen> {
   CameraController? _cameraController;
   bool _isCameraReady = false;
   bool _showCamera = false;
+  bool _disposed = false;
 
   @override
   void dispose() {
+    _disposed = true;
     _weightController.dispose();
     _cameraController?.dispose();
     super.dispose();
@@ -383,11 +385,12 @@ class _WeightVerificationScreenState extends State<WeightVerificationScreen> {
         builder: (context, snapshot) {
           final order = snapshot.data;
           if (order == null) return const Center(child: CircularProgressIndicator());
-          if (order.assignedTo != staffId && order.staffId != staffId) {
+          final assigned = order.assignedTo ?? order.staffId;
+          if (assigned != null && assigned.isNotEmpty && assigned != staffId) {
             return const Center(child: Text('This transaction is not assigned to you.'));
           }
-          final locked = order.weightStatus == 'submitted' || order.isWeightVerified;
-          if (_weightController.text.isEmpty && order.actualWeight != null) {
+          final locked = order.isWeightVerified;
+          if (!_disposed && _weightController.text.isEmpty && order.actualWeight != null) {
             _weightController.text = order.actualWeight!.toString();
           }
           return ListView(
@@ -527,9 +530,13 @@ class _WeightVerificationScreenState extends State<WeightVerificationScreen> {
                       ],
                       if (locked) ...[
                         const SizedBox(height: 12),
-                        Text(order.isWeightVerified ? 'Weight verified by admin.' : 'Awaiting admin verification.'),
+                        Text(
+                          order.isWeightVerified
+                              ? 'Weight verified and final. The scale photo is your audit evidence.'
+                              : 'Weight is being recorded.',
+                        ),
                         if (order.weightSubmittedAt != null)
-                          Text('Submitted ${DateHelper.formatDateTime(order.weightSubmittedAt!)}'),
+                          Text('Verified ${DateHelper.formatDateTime(order.weightSubmittedAt!)}'),
                       ],
                       if (!locked) ...[
                         if (_submissionProgress != null) ...[
@@ -561,7 +568,7 @@ class _WeightVerificationScreenState extends State<WeightVerificationScreen> {
                             style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
                             onPressed: _submitting ? null : () => _submit(order, staffId),
                             icon: const Icon(Icons.verified_outlined),
-                            label: Text(_submissionProgress ?? 'Submit Weight for Admin Verification'),
+                            label: Text(_submissionProgress ?? 'Submit Verified Weight (Final)'),
                           ),
                         ),
                       ],

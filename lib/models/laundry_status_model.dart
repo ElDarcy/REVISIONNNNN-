@@ -21,6 +21,7 @@ enum LaundryStatus {
   readyForPickup,
   outForDelivery,
   delivered,
+  pickedUp,
   completed,
   cancelled;
 
@@ -70,6 +71,8 @@ enum LaundryStatus {
         return 'Out for Delivery';
       case LaundryStatus.delivered:
         return 'Delivered';
+      case LaundryStatus.pickedUp:
+        return 'Picked Up';
       case LaundryStatus.completed:
         return 'Completed';
       case LaundryStatus.cancelled:
@@ -87,15 +90,17 @@ enum LaundryStatus {
       case LaundryStatus.receivedAtShop:
         return 'Received at Shop';
       case LaundryStatus.readyForDelivery:
-        return 'Ready for Staff Delivery';
+        return 'Ready for Delivery';
       case LaundryStatus.readyForPickup:
-        return 'Ready for Customer Pickup';
+        return 'Ready for Pickup';
       case LaundryStatus.outForDelivery:
-        return 'Staff Delivery in Progress';
+        return 'Out for Delivery';
       case LaundryStatus.paymentPendingVerification:
         return 'Awaiting Payment Verification';
       case LaundryStatus.paymentVerified:
-        return 'PAID';
+        return 'Paid';
+      case LaundryStatus.pickedUp:
+        return 'Picked Up';
       default:
         return value;
     }
@@ -147,6 +152,8 @@ enum LaundryStatus {
         return LaundryStatus.outForDelivery;
       case 'Delivered':
         return LaundryStatus.delivered;
+      case 'Picked Up':
+        return LaundryStatus.pickedUp;
       case 'Completed':
         return LaundryStatus.completed;
       case 'Cancelled':
@@ -179,7 +186,9 @@ enum LaundryStatus {
       this == LaundryStatus.outForDelivery;
 
   bool get isFinished =>
-      this == LaundryStatus.delivered || this == LaundryStatus.completed;
+      this == LaundryStatus.delivered ||
+      this == LaundryStatus.pickedUp ||
+      this == LaundryStatus.completed;
 
   static List<LaundryStatus> get staffUpdatableStatuses => [
     LaundryStatus.orderReceived,
@@ -190,6 +199,7 @@ enum LaundryStatus {
     LaundryStatus.readyForPickup,
     LaundryStatus.outForDelivery,
     LaundryStatus.delivered,
+    LaundryStatus.pickedUp,
     LaundryStatus.completed,
   ];
 }

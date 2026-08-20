@@ -9,6 +9,7 @@ import '../models/machine_issue_model.dart';
 import '../engines/order_status_flow_engine.dart';
 import '../engines/order_load_engine.dart';
 import '../engines/order_scheduling_gate.dart';
+import '../engines/machine_assignment_engine.dart';
 import '../core/constants/app_constants.dart';
 import '../services/notification_service.dart';
 
@@ -28,13 +29,15 @@ class MachineProvider extends ChangeNotifier {
   bool _isLoading = false;
   String? _error;
 
-  // Automated scheduler state.
+// Automated scheduler state.
   StreamSubscription? _schedulerSub;
   StreamSubscription? _ordersSub;
   StreamSubscription? _loadsSub;
+  Timer? _sweepTimer;
   final Map<String, String> _lastMachineStatuses = {};
   final Map<String, String> _lastOrderEligibility = {};
   bool _processingQueue = false;
+  bool _needsReschedule = false;
 
   List<MachineModel> get machines => _machines;
   bool get isLoading => _isLoading;
@@ -44,11 +47,12 @@ class MachineProvider extends ChangeNotifier {
     _startAutoScheduler();
   }
 
-  @override
+@override
   void dispose() {
     _schedulerSub?.cancel();
     _ordersSub?.cancel();
     _loadsSub?.cancel();
+    _sweepTimer?.cancel();
     super.dispose();
   }
 
@@ -277,7 +281,7 @@ class MachineProvider extends ChangeNotifier {
             userId: 'broadcast_staff', // Special keyword for all staff
             title: 'Machine Assigned',
             body:
-                'Order #${orderId.substring(0, 6).toUpperCase()} assigned to $assigned',
+                'Transaction #${orderId.substring(0, 6).toUpperCase()} assigned to $assigned',
             type: 'operational',
             orderId: orderId,
           );
@@ -412,7 +416,7 @@ class MachineProvider extends ChangeNotifier {
             userId: 'broadcast_staff',
             title: 'Load Assigned',
             body:
-                'Load #${loadId.substring(0, 4)} (Order #${orderId.substring(0, 6).toUpperCase()}) assigned to $assigned',
+                'Load #${loadId.substring(0, 4)} (Transaction #${orderId.substring(0, 6).toUpperCase()}) assigned to $assigned',
             type: 'operational',
             orderId: orderId,
           );
@@ -428,6 +432,7 @@ class MachineProvider extends ChangeNotifier {
 
   /// Re-derive and persist the parent order status based on all its loads.
   /// Called after a load completes a step. Returns the derived status.
+  /// BUG FIX: Removed automatic delivery queue creation — customer chooses fulfillment.
   Future<String> _deriveParentOrderStatus(String orderId) async {
     try {
       final orderDoc = await _firestore.collection('orders').doc(orderId).get();
@@ -455,27 +460,17 @@ class MachineProvider extends ChangeNotifier {
         final deadline = now.add(const Duration(days: 2));
         update['readyForPickupAt'] = now.toIso8601String();
         update['pickupDeadlineAt'] = deadline.toIso8601String();
-        update['deliveryDeadlineAt'] = deadline.toIso8601String();
       }
-      if (derived == OrderStatusFlowEngine.statusReadyForDelivery) {
-        // Delivery is queued only for the delivery branch. Customer pickup
-        // remains available until the server-side two-day deadline expires.
-        final existing = await _deliveryQueueExists(orderId);
-        if (!existing) {
-          await _addOrderToDeliveryQueue(orderId);
-        }
-      }
+      // NO automatic delivery queue creation — customer chooses fulfillment
       await _firestore.collection('orders').doc(orderId).update(update);
 
       // Milestone: ALL loads completed
-      if (derived == OrderStatusFlowEngine.statusReadyForDelivery ||
-          derived == OrderStatusFlowEngine.statusReadyForPickup) {
+      if (derived == OrderStatusFlowEngine.statusReadyForPickup) {
         // Notify Customer
         await NotificationService().sendNotification(
           userId: order.userId,
           title: 'Laundry Ready!',
-          body:
-              'Your laundry is ready for ${order.deliveryMethod.toLowerCase()}.',
+          body: 'Your laundry is ready! Choose how to receive it.',
           type: 'milestone',
           orderId: orderId,
         );
@@ -483,9 +478,9 @@ class MachineProvider extends ChangeNotifier {
         // Notify Staff/Admin
         await NotificationService().sendNotification(
           userId: 'broadcast_staff',
-          title: 'Order Ready',
+          title: 'Transaction Ready',
           body:
-              'Order #${orderId.substring(0, 6).toUpperCase()} is ready for ${order.deliveryMethod.toLowerCase()}.',
+              'Transaction #${orderId.substring(0, 6).toUpperCase()} is ready for customer pickup.',
           type: 'operational',
           orderId: orderId,
         );
@@ -495,19 +490,6 @@ class MachineProvider extends ChangeNotifier {
     } catch (e) {
       debugPrint('_deriveParentOrderStatus error: $e');
       return '';
-    }
-  }
-
-  /// Whether a deliveryQueue entry exists for [orderId].
-  Future<bool> _deliveryQueueExists(String orderId) async {
-    try {
-      final doc = await _firestore
-          .collection('deliveryQueue')
-          .doc(orderId)
-          .get();
-      return doc.exists;
-    } catch (e) {
-      return false;
     }
   }
 
@@ -630,9 +612,7 @@ class MachineProvider extends ChangeNotifier {
         action: AppConstants.machineLogCompleted,
       );
 
-      if (resultStatus == OrderStatusFlowEngine.statusReadyForDelivery) {
-        await _addOrderToDeliveryQueue(orderId);
-      }
+      // NO automatic delivery queue creation — customer chooses fulfillment
 
       if (loadId != null && loadId.isNotEmpty) {
         await _deriveParentOrderStatus(orderId);
@@ -778,7 +758,7 @@ class MachineProvider extends ChangeNotifier {
     // Weight approval and load creation are separate Firestore operations.
     // Wake the same scheduler when the gate creates eligible loads, covering
     // the race where the order listener runs before those load documents exist.
-    _loadsSub = _firestore.collection('orderLoads').snapshots().listen((snapshot) {
+_loadsSub = _firestore.collection('orderLoads').snapshots().listen((snapshot) {
       final hasWaitingLoad = snapshot.docs.any((doc) {
         final status = doc.data()['status'];
         return status == OrderStatusFlowEngine.statusPaymentVerified ||
@@ -787,6 +767,122 @@ class MachineProvider extends ChangeNotifier {
       });
       if (hasWaitingLoad) unawaited(_processQueueAsync());
     }, onError: (e) => debugPrint('Auto-scheduler loads listen error: $e'));
+
+    // Self-healing sweep. The event-driven triggers above fire only when a
+    // relevant document CHANGES while this provider is alive. If the final
+    // gate-closing write (weight/payment/remittance) raced or failed silently,
+    // no event ever fires again and the order is left eligible-but-loadless.
+    // Sweep every 10s: release eligible load-less orders (idempotent) and
+    // re-run the machine pass so processing always advances.
+    _sweepTimer = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) => unawaited(_sweepAndSelfHeal()),
+    );
+  }
+
+  /// Self-healing sweep, the fallback behind the event-driven scheduler.
+  ///
+  /// Only touches eligible/unassigned waiting loads and load-less eligible
+  /// orders (never scans machines). Every 3s it:
+  ///   1. Repairs the corrupted "Waiting for Machine/Dryer but machine already
+  ///      reserved for the load" state (load actually -> Machine/Dryer Assigned).
+  ///   2. Releases eligible orders that still have no loads.
+  ///   3. Re-runs the guarded machine assignment pass.
+  Future<void> _sweepAndSelfHeal() async {
+    try {
+      // 1. Waiting/unassigned loads only (single-field query, no index needed).
+      final waitingLoads = await _firestore
+          .collection('orderLoads')
+          .where(
+            'status',
+            whereIn: [
+              OrderStatusFlowEngine.statusPaymentVerified,
+              OrderStatusFlowEngine.statusWaitingForMachine,
+              OrderStatusFlowEngine.statusWaitingForDryer,
+            ],
+          )
+          .get();
+
+      for (final doc in waitingLoads.docs) {
+        final load = OrderLoadModel.fromMap(doc.data(), doc.id);
+        final orderId = load.orderId;
+        final orderDoc = await _firestore
+            .collection('orders')
+            .doc(orderId)
+            .get();
+        if (!orderDoc.exists) continue;
+        final orderData = orderDoc.data()!;
+        final status = orderData['status'];
+        if (status == 'Completed' || status == 'Cancelled') continue;
+
+        final hasWasher = MachineAssignmentEngine.hasAssignedMachine(
+          load,
+          AppConstants.machineWasher,
+        );
+        final hasDryer = MachineAssignmentEngine.hasAssignedMachine(
+          load,
+          AppConstants.machineDryer,
+        );
+
+        if (load.status.value ==
+                OrderStatusFlowEngine.statusWaitingForMachine &&
+            hasWasher) {
+          debugPrint(
+            '[Sweep] Heal: load ${load.id} waiting but washer '
+            '${load.assignedWasherId} assigned -> Machine Assigned',
+          );
+          await _firestore.collection('orderLoads').doc(load.id).update({
+            'status': OrderStatusFlowEngine.statusMachineAssigned,
+            'updatedAt': Timestamp.now(),
+          });
+          await _removeFromLaundryQueue(orderId, loadId: load.id);
+          continue;
+        }
+        if (load.status.value ==
+                OrderStatusFlowEngine.statusWaitingForDryer &&
+            hasDryer) {
+          debugPrint(
+            '[Sweep] Heal: load ${load.id} waiting but dryer '
+            '${load.assignedDryerId} assigned -> Dryer Assigned',
+          );
+          await _firestore.collection('orderLoads').doc(load.id).update({
+            'status': OrderStatusFlowEngine.statusDryerAssigned,
+            'updatedAt': Timestamp.now(),
+          });
+          await _removeFromLaundryQueue(orderId, loadId: load.id);
+          continue;
+        }
+      }
+
+      // 2. Eligible orders that still have no loads (idempotent release).
+      final verified = await _firestore
+          .collection('orders')
+          .where('weightStatus', isEqualTo: 'verified')
+          .get();
+      for (final doc in verified.docs) {
+        final data = doc.data();
+        final status = data['status'];
+        if (status == 'Completed' || status == 'Cancelled') continue;
+        final hasLoads = (data['numberOfLoads'] ?? 0) > 0;
+        if (!hasLoads && OrderSchedulingGate.isEligible(data)) {
+          await OrderSchedulingGate.releaseIfEligible(_firestore, doc.id);
+        } else if (!OrderSchedulingGate.isEligible(data)) {
+          debugPrint(
+            '[Sweep] Order ${doc.id} not eligible — '
+            '${OrderSchedulingGate.describeBlockers(data)}',
+          );
+        }
+      }
+
+      // 3. Run the machine assignment pass (single writer, guarded).
+      if (_processingQueue) {
+        _needsReschedule = true;
+      } else {
+        unawaited(_processQueueAsync());
+      }
+    } catch (e) {
+      debugPrint('_sweepAndSelfHeal error: $e');
+    }
   }
 
   Future<void> _scheduleVerifiedOrder(String orderId) async {
@@ -795,9 +891,12 @@ class MachineProvider extends ChangeNotifier {
       if (!doc.exists) return;
       final orderData = doc.data()!;
       final actualWeight = (orderData['actualWeight'] as num?)?.toDouble();
+      final paymentOk =
+          orderData['paymentStatus'] == 'Verified' ||
+          orderData['paymentStatus'] == 'Pending Collection';
       if ((orderData['status'] ?? '') !=
               OrderStatusFlowEngine.statusPaymentVerified ||
-          orderData['paymentStatus'] != 'Verified' ||
+          !paymentOk ||
           orderData['weightStatus'] != 'verified' ||
           actualWeight == null ||
           !actualWeight.isFinite ||
@@ -813,6 +912,14 @@ class MachineProvider extends ChangeNotifier {
     }
   }
 
+  /// Enqueues the order's loads for machine scheduling. This method is NOT an
+  /// assignment writer: it only moves Payment-Verified loads to a waiting
+  /// state and adds them to the machine queue, then hands off to
+  /// [_processQueueAsync] (the single authority that reserves machines).
+  ///
+  /// This single-writer design eliminates the race where two paths could
+  /// assign and then revert the same load (load left "Waiting for Machine"
+  /// while its washer is already reserved).
   Future<void> scheduleOrderLoads({
     required String orderId,
     required String serviceType,
@@ -823,79 +930,71 @@ class MachineProvider extends ChangeNotifier {
           .where('orderId', isEqualTo: orderId)
           .get();
       if (loadsSnap.docs.isEmpty) {
-        debugPrint(
-          'scheduleOrderLoads: No loads found for $orderId. Scheduler will sweep it.',
-        );
+        debugPrint('scheduleOrderLoads: No loads found for $orderId.');
         return;
       }
 
-      final loads = loadsSnap.docs;
-      for (var i = 0; i < loads.length; i++) {
-        final load = OrderLoadModel.fromMap(loads[i].data(), loads[i].id);
+      for (final doc in loadsSnap.docs) {
+        final load = OrderLoadModel.fromMap(doc.data(), doc.id);
         if (load.status.value != OrderStatusFlowEngine.statusPaymentVerified) {
           continue;
         }
-        await scheduleSingleLoad(load, orderId, serviceType);
-        if (i < loads.length - 1) {
-          await Future<void>.delayed(const Duration(milliseconds: 300));
-        }
+        await _enqueueLoadForScheduling(load, orderId, serviceType);
+      }
+
+      // Single-writer handoff: the queue processor performs all assignments.
+      if (_processingQueue) {
+        _needsReschedule = true;
+      } else {
+        unawaited(_processQueueAsync());
       }
     } catch (e) {
       debugPrint('scheduleOrderLoads error: $e');
     }
   }
 
-  Future<bool> scheduleSingleLoad(
+  /// Marks a single Payment-Verified load as waiting and adds it to the
+  /// machine queue. Idempotent: if the load already has a machine assigned,
+  /// it is left in its assigned state (never reverted to waiting).
+  Future<void> _enqueueLoadForScheduling(
     OrderLoadModel load,
     String orderId,
     String serviceType,
   ) async {
     final needsWash = OrderStatusFlowEngine.needsWashing(serviceType);
     final needsDry = OrderStatusFlowEngine.needsDrying(serviceType);
-
-    if (needsWash) {
-      final assigned = await assignMachineToLoad(
-        loadId: load.id,
-        orderId: orderId,
-        serviceType: serviceType,
-        targetStatus: OrderStatusFlowEngine.statusMachineAssigned,
-        type: AppConstants.machineWasher,
+    final hasMachine =
+        (needsWash &&
+                MachineAssignmentEngine.hasAssignedMachine(
+                  load,
+                  AppConstants.machineWasher,
+                )) ||
+        (needsDry &&
+                MachineAssignmentEngine.hasAssignedMachine(
+                  load,
+                  AppConstants.machineDryer,
+                ));
+    if (hasMachine) {
+      debugPrint(
+        'scheduleOrderLoads: Load ${load.id} already has a machine assigned.',
       );
-      if (assigned) return true;
-      await _firestore.collection('orderLoads').doc(load.id).update({
-        'status': OrderStatusFlowEngine.statusWaitingForMachine,
-        'updatedAt': Timestamp.now(),
-      });
-      await _addLoadToQueue(
-        loadId: load.id,
-        orderId: orderId,
-        machineType: AppConstants.machineWasher,
-      );
-      return false;
+      return;
     }
 
-    if (needsDry) {
-      final assigned = await assignMachineToLoad(
-        loadId: load.id,
-        orderId: orderId,
-        serviceType: serviceType,
-        targetStatus: OrderStatusFlowEngine.statusDryerAssigned,
-        type: AppConstants.machineDryer,
-      );
-      if (assigned) return true;
-      await _firestore.collection('orderLoads').doc(load.id).update({
-        'status': OrderStatusFlowEngine.statusWaitingForDryer,
-        'updatedAt': Timestamp.now(),
-      });
-      await _addLoadToQueue(
-        loadId: load.id,
-        orderId: orderId,
-        machineType: AppConstants.machineDryer,
-      );
-      return false;
-    }
-
-    return false;
+    final waitingStatus = needsWash
+        ? OrderStatusFlowEngine.statusWaitingForMachine
+        : OrderStatusFlowEngine.statusWaitingForDryer;
+    await _firestore.collection('orderLoads').doc(load.id).update({
+      'status': waitingStatus,
+      'updatedAt': Timestamp.now(),
+    });
+    await _addLoadToQueue(
+      loadId: load.id,
+      orderId: orderId,
+      machineType: needsWash
+          ? AppConstants.machineWasher
+          : AppConstants.machineDryer,
+    );
   }
 
   Future<bool> scheduleOrderForMachine({
@@ -976,42 +1075,6 @@ class MachineProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> _addOrderToDeliveryQueue(String orderId) async {
-    try {
-      final orderDoc = await _firestore.collection('orders').doc(orderId).get();
-      if (!orderDoc.exists) return;
-      final data = orderDoc.data()!;
-
-      final queueRef = _firestore.collection('deliveryQueue').doc(orderId);
-      final existing = await queueRef.get();
-      if (existing.exists) return;
-
-      final lat = (data['customerLatitude'] ?? 0).toDouble();
-      final lng = (data['customerLongitude'] ?? 0).toDouble();
-
-      await queueRef.set({
-        'orderId': orderId,
-        'customerId': data['userId'],
-        'customerName': data['customerName'],
-        'address': data['deliveryAddress'] is Map
-            ? [
-                data['deliveryAddress']['street'],
-                data['deliveryAddress']['barangay'],
-                data['deliveryAddress']['city'],
-              ].where((part) => part != null && part.toString().trim().isNotEmpty).join(', ')
-            : null,
-        'latitude': lat,
-        'longitude': lng,
-        'distanceKm': 0,
-        'priorityScore': 50,
-        'status': 'Pending Delivery',
-        'createdAt': Timestamp.now(),
-      });
-    } catch (e) {
-      debugPrint('_addOrderToDeliveryQueue error: $e');
-    }
-  }
-
   Future<void> _removeFromLaundryQueue(String orderId, {String? loadId}) async {
     try {
       final query = (loadId != null && loadId.isNotEmpty)
@@ -1050,7 +1113,8 @@ class MachineProvider extends ChangeNotifier {
         final machineSnap = await transaction.get(machineRef);
         if (!machineSnap.exists) return;
         final data = machineSnap.data()!;
-        if (data['status'] != AppConstants.machineReserved) return;
+        final st = data['status'] as String?;
+        if (st != AppConstants.machineReserved && st != AppConstants.machineAvailable) return;
 
         final currentUsage = ((data['usageCount'] ?? 0) as num).toInt();
         final busy = machineType == AppConstants.machineWasher
@@ -1061,6 +1125,8 @@ class MachineProvider extends ChangeNotifier {
           'status': busy,
           'usageCount': currentUsage + 1,
           'lastUsed': now,
+          'currentOrderId': orderId,
+          if (loadId != null && loadId.isNotEmpty) 'currentLoadId': loadId,
         });
 
         if (loadId != null && loadId.isNotEmpty) {
@@ -1117,7 +1183,10 @@ class MachineProvider extends ChangeNotifier {
   }
 
   Future<void> _processQueueAsync() async {
-    if (_processingQueue) return;
+    if (_processingQueue) {
+      _needsReschedule = true;
+      return;
+    }
     _processingQueue = true;
     try {
       debugPrint('[Scheduler] Starting queue processing pass...');
@@ -1152,24 +1221,23 @@ class MachineProvider extends ChangeNotifier {
           )
           .get();
 
-      final waitingDocs = waitingSnap.docs.toList()
-        ..sort((a, b) {
-          final aDate = _toDateTime(a.data()['createdAt']);
-          final bDate = _toDateTime(b.data()['createdAt']);
-          return (aDate ?? DateTime.fromMillisecondsSinceEpoch(0)).compareTo(
-            bDate ?? DateTime.fromMillisecondsSinceEpoch(0),
-          );
-        });
+      final waitingDocs = waitingSnap.docs.toList();
+      final waitingModels = waitingDocs
+          .map((doc) => OrderLoadModel.fromMap(doc.data(), doc.id))
+          .toList();
+      // FIFO: oldest waiting load first (queue position #1 = oldest).
+      final sortedModels = MachineAssignmentEngine.sortWaitingLoadsFifo(
+        waitingModels,
+      );
 
-      debugPrint('[Scheduler] Waiting loads: ${waitingDocs.length}');
+      debugPrint('[Scheduler] Waiting loads: ${sortedModels.length}');
 
-      for (final doc in waitingDocs) {
-        final loadData = doc.data();
-        final status = loadData['status'] as String?;
-        final loadId = doc.id;
-        final orderId = loadData['orderId'] as String? ?? '';
-        final serviceType = loadData['serviceType'] as String? ?? '';
-        final loadNum = loadData['loadNumber'] ?? '?';
+      for (final load in sortedModels) {
+        final status = load.status.value;
+        final loadId = load.id;
+        final orderId = load.orderId;
+        final serviceType = load.serviceType;
+        final loadNum = load.loadNumber;
 
         // Loads are scheduled only while the parent still satisfies the same
         // payment, staff, and verified-actual-weight gate that created them.
@@ -1206,14 +1274,8 @@ class MachineProvider extends ChangeNotifier {
             continue;
           }
 
-          // TAKE THE BEST CANDIDATE FROM LOCAL POOL
-          final machineId = washerCandidates.first;
-          debugPrint(
-            '[Scheduler] Selected machine: $machineId for Wash Load $loadId',
-          );
-
-          final assigned = await _assignLoadSpecificMachine(
-            machineId: machineId,
+          final assigned = await _tryAssignLoadFromCandidates(
+            washerCandidates,
             loadId: loadId,
             orderId: orderId,
             serviceType: serviceType,
@@ -1225,15 +1287,11 @@ class MachineProvider extends ChangeNotifier {
             debugPrint(
               '[Scheduler] Assignment committed: Washer $assigned to Load $loadId',
             );
-            washerCandidates.remove(assigned); // REMOVE FROM POOL
+            washerCandidates.remove(assigned);
             debugPrint(
               '[Scheduler] Remaining candidates: Washers=${washerCandidates.length}',
             );
             await _removeFromLaundryQueue(orderId, loadId: loadId);
-          } else {
-            debugPrint(
-              '[Scheduler] FAILED transaction for Washer $machineId. Keeping in pool.',
-            );
           }
         } else if (needsDry) {
           if (dryerCandidates.isEmpty) {
@@ -1283,6 +1341,10 @@ class MachineProvider extends ChangeNotifier {
       debugPrint('_processQueueAsync error: $e');
     } finally {
       _processingQueue = false;
+      if (_needsReschedule) {
+        _needsReschedule = false;
+        unawaited(_processQueueAsync());
+      }
     }
   }
 
@@ -1292,27 +1354,14 @@ class MachineProvider extends ChangeNotifier {
           .collection('machines')
           .where('type', isEqualTo: type)
           .get();
-      final available = querySnapshot.docs.where((doc) {
-        final status = (doc.data()['status'] ?? '') as String;
-        return status == AppConstants.machineAvailable;
-      }).toList();
-
-      available.sort((a, b) {
-        final aUsage = ((a.data()['usageCount'] ?? 0) as num).toInt();
-        final bUsage = ((b.data()['usageCount'] ?? 0) as num).toInt();
-        final usageCompare = aUsage.compareTo(bUsage);
-        if (usageCompare != 0) return usageCompare;
-        final aLast = _toDateTime(a.data()['lastUsed']);
-        final bLast = _toDateTime(b.data()['lastUsed']);
-        final lastCompare = (aLast ?? DateTime.fromMillisecondsSinceEpoch(0))
-            .compareTo(bLast ?? DateTime.fromMillisecondsSinceEpoch(0));
-        if (lastCompare != 0) return lastCompare;
-        final aMachineNum = ((a.data()['machineNumber'] ?? 0) as num).toInt();
-        final bMachineNum = ((b.data()['machineNumber'] ?? 0) as num).toInt();
-        return aMachineNum.compareTo(bMachineNum);
-      });
-
-      return available.map((doc) => doc.id).toList();
+      final machines = querySnapshot.docs
+          .map((doc) => MachineModel.fromMap(doc.data(), doc.id))
+          .toList();
+      final ranked = MachineAssignmentEngine.rankAvailableMachines(
+        machines,
+        type,
+      );
+      return ranked.map((m) => m.id).toList();
     } catch (e) {
       debugPrint('_getAvailableCandidates error: $e');
       return [];

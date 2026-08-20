@@ -1,7 +1,8 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
-import 'dart:io';
 import '../../../core/widgets/custom_button.dart';
 import '../../../core/widgets/custom_text_field.dart';
 import '../../../core/utils/validators.dart';
@@ -31,7 +32,7 @@ class GCashPaymentScreen extends StatefulWidget {
 class _GCashPaymentScreenState extends State<GCashPaymentScreen> {
   final _formKey = GlobalKey<FormState>();
   final _referenceController = TextEditingController();
-  File? _receiptImage;
+  Uint8List? _receiptBytes;
   final ImagePicker _picker = ImagePicker();
   bool _isLoading = false;
 
@@ -67,11 +68,9 @@ class _GCashPaymentScreenState extends State<GCashPaymentScreen> {
     if (source != null) {
       final file = await _picker.pickImage(source: source, imageQuality: 80);
       if (file != null && mounted) {
-        final selected = File(file.path);
-        // Validate the file exists and is non-empty to avoid
-        // Image.file assertion errors (corrupt/invalid image data).
-        if (selected.existsSync() && selected.lengthSync() > 0) {
-          setState(() => _receiptImage = selected);
+        final bytes = await file.readAsBytes();
+        if (bytes.isNotEmpty) {
+          setState(() => _receiptBytes = bytes);
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -86,10 +85,24 @@ class _GCashPaymentScreenState extends State<GCashPaymentScreen> {
 
   Future<void> _submitPayment() async {
     if (!_formKey.currentState!.validate()) return;
-    if (_receiptImage == null) {
+    if (_receiptBytes == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Please upload a receipt screenshot'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    // Base64 is about 4/3 the final JPEG size. Check up-front so the user
+    // gets immediate feedback instead of a Firestore write error later.
+    final proofBase64 = base64Encode(_receiptBytes!);
+    const maxProofBase64Bytes = 700 * 1024;
+    if (proofBase64.length > maxProofBase64Bytes) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Receipt screenshot is too large. Please pick a smaller photo.'),
           backgroundColor: Colors.red,
         ),
       );
@@ -101,12 +114,12 @@ class _GCashPaymentScreenState extends State<GCashPaymentScreen> {
 
     setState(() => _isLoading = true);
 
-    final success = await paymentProvider.processGCashPayment(
+    final success = await paymentProvider.processGCashPaymentFromBytes(
       orderId: widget.orderId,
       userId: authProvider.user?.id ?? '',
       amount: widget.amount,
       referenceNumber: _referenceController.text.trim(),
-      receiptImagePath: _receiptImage!.path,
+      receiptBytes: _receiptBytes!,
       paymentType: widget.paymentType,
     );
 
@@ -355,19 +368,19 @@ class _GCashPaymentScreenState extends State<GCashPaymentScreen> {
                     color: Colors.grey.shade50,
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(
-                      color: _receiptImage != null
-                          ? const Color(0xFF1565C0).withValues(alpha: 0.5)
-                          : Colors.grey.shade300,
-                      width: _receiptImage != null ? 2 : 1,
+                  color: _receiptBytes != null
+                      ? const Color(0xFF1565C0).withValues(alpha: 0.5)
+                      : Colors.grey.shade300,
+                  width: _receiptBytes != null ? 2 : 1,
                     ),
                   ),
-                  child: _receiptImage != null
+                  child: _receiptBytes != null
                       ? Stack(
                           children: [
                             ClipRRect(
                               borderRadius: BorderRadius.circular(12),
-                              child: Image.file(
-                                _receiptImage!,
+                              child: Image.memory(
+                                _receiptBytes!,
                                 fit: BoxFit.cover,
                                 width: double.infinity,
                                 height: double.infinity,

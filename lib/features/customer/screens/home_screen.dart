@@ -200,7 +200,7 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
           child: _buildActionCard(
             icon: Icons.add_circle_outline,
             label: 'New Transaction',
-            description: 'Create a new laundry order quickly',
+            description: 'Create a new laundry transaction quickly',
             color: AppColors.primary,
             onTap: () => Navigator.pushNamed(context, '/customer/create-order'),
           ),
@@ -210,7 +210,7 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
           child: _buildActionCard(
             icon: Icons.track_changes,
             label: 'Track Laundry Transaction',
-            description: 'See the current status of your order',
+            description: 'See the current status of your transaction',
             color: AppColors.success,
             onTap: () =>
                 Navigator.pushNamed(context, '/customer/order-history'),
@@ -503,7 +503,7 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
                     color: AppColors.primary,
                   ),
                 ),
-                title: Text('Transaction #${order.id.substring(0, 6).toUpperCase()}'),
+                title: Text('Transaction ${order.displayNumber}'),
                 subtitle: Text('Status: ${order.status.value}'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => Navigator.pushNamed(

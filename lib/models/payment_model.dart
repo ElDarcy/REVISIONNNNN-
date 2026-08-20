@@ -9,7 +9,13 @@ class PaymentModel {
   final String paymentType;
   final String status;
   final String? referenceNumber;
+  /// Download URL for legacy receipts uploaded to Firebase Storage. New
+  /// receipts are stored as Base64 in the `transaction_proofs` collection and
+  /// referenced by [receiptProofId] instead.
   final String? receiptImageUrl;
+  /// Document ID in `transaction_proofs` holding the Base64 receipt image
+  /// (`proof_type: 'gcash_receipt'`). Null for legacy Storage receipts.
+  final String? receiptProofId;
   final String? verifiedBy;
   final DateTime? verifiedAt;
   final String? rejectionReason;
@@ -28,6 +34,7 @@ class PaymentModel {
     this.status = 'Pending Verification',
     this.referenceNumber,
     this.receiptImageUrl,
+    this.receiptProofId,
     this.verifiedBy,
     this.verifiedAt,
     this.rejectionReason,
@@ -48,6 +55,7 @@ class PaymentModel {
       'status': status,
       'referenceNumber': referenceNumber,
       'receiptImageUrl': receiptImageUrl,
+      'receiptProofId': receiptProofId,
       'verifiedBy': verifiedBy,
       'verifiedAt': verifiedAt?.toIso8601String(),
       'rejectionReason': rejectionReason,
@@ -69,6 +77,7 @@ class PaymentModel {
       status: map['status'] ?? 'Pending Verification',
       referenceNumber: map['referenceNumber'],
       receiptImageUrl: map['receiptImageUrl'],
+      receiptProofId: map['receiptProofId'],
       verifiedBy: map['verifiedBy'],
       verifiedAt: map['verifiedAt'] != null
           ? DateTime.parse(map['verifiedAt'])
@@ -98,6 +107,7 @@ class PaymentModel {
     String? status,
     String? referenceNumber,
     String? receiptImageUrl,
+    String? receiptProofId,
     String? verifiedBy,
     DateTime? verifiedAt,
     String? rejectionReason,
@@ -116,6 +126,7 @@ class PaymentModel {
       status: status ?? this.status,
       referenceNumber: referenceNumber ?? this.referenceNumber,
       receiptImageUrl: receiptImageUrl ?? this.receiptImageUrl,
+      receiptProofId: receiptProofId ?? this.receiptProofId,
       verifiedBy: verifiedBy ?? this.verifiedBy,
       verifiedAt: verifiedAt ?? this.verifiedAt,
       rejectionReason: rejectionReason ?? this.rejectionReason,

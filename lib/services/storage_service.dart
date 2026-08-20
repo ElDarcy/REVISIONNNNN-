@@ -45,17 +45,6 @@ class StorageService {
     return await snapshot.ref.getDownloadURL();
   }
 
-  Future<String> uploadReceiptImage({
-    required File receiptFile,
-    required String userId,
-    required String orderId,
-  }) async {
-    return await uploadImage(
-      imageFile: receiptFile,
-      folder: 'receipts/$userId/$orderId',
-    );
-  }
-
   Future<String> uploadProfileImage({
     required File imageFile,
     required String userId,

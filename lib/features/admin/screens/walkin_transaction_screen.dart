@@ -158,6 +158,8 @@ class _WalkinTransactionScreenState extends State<WalkinTransactionScreen> {
         customerPhone: _phoneController.text.trim(),
         paymentMethodOverride: _paymentMethod,
         paymentStatusOverride: _paymentMethod == 'Cash at Shop' ? 'Verified' : 'Pending Verification',
+        weightStatusOverride: 'verified',
+        actualWeightOverride: weight,
       );
 
       setState(() => _isLoading = false);

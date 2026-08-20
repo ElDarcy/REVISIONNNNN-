@@ -59,7 +59,7 @@ class ReportsScreen extends StatelessWidget {
                   children: [
                     Expanded(
                       child: _buildReportCard(
-                        'Total Orders',
+                        'Total Transactions',
                         totalOrders.toString(),
                         Icons.receipt,
                         AppColors.primary,
@@ -90,7 +90,7 @@ class ReportsScreen extends StatelessWidget {
                     const SizedBox(width: 12),
                     Expanded(
                       child: _buildReportCard(
-                        'Avg Order',
+                        'Avg Transaction',
                         CurrencyHelper.formatSimple(avgOrderValue),
                         Icons.analytics,
                         AppColors.processingColor,
@@ -100,7 +100,7 @@ class ReportsScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 24),
                 const Text(
-                  'Recent Orders',
+                  'Recent Transactions',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 12),
@@ -110,6 +110,8 @@ class ReportsScreen extends StatelessWidget {
                       (data['totalAmount'] as num?)?.toDouble() ?? 0.0;
                   final status = data['status'] as String? ?? 'N/A';
                   final createdAt = data['createdAt'] as String?;
+                  final txn = data['transactionNumber'] as String? ??
+                      'Transaction #${doc.id.substring(0, 6).toUpperCase()}';
 
                   return Card(
                     child: ListTile(
@@ -124,7 +126,7 @@ class ReportsScreen extends StatelessWidget {
                         ),
                       ),
                       title: Text(
-                        'Order #${doc.id.substring(0, 6).toUpperCase()}',
+                        txn,
                       ),
                       subtitle: Text(
                         '$status | ${CurrencyHelper.formatSimple(amount)}',
