@@ -51,12 +51,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (!mounted) return;
     if (success) {
-      final user = authProvider.user;
-      if (user != null) {
-        await _go(user);
-      } else {
-        _showSnack('Please wait, loading your account…');
-      }
+      await _completeSignIn(authProvider);
     } else if (authProvider.error != null) {
       _showSnack(authProvider.error!);
     }
@@ -70,14 +65,25 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isGoogleLoading = false);
 
     if (success) {
-      final user = authProvider.user;
-      if (user != null) {
-        await _go(user);
-      } else {
-        _showSnack('Please wait, loading your account…');
-      }
+      await _completeSignIn(authProvider);
     } else if (authProvider.error != null) {
       _showSnack(authProvider.error!);
+    }
+  }
+
+  Future<void> _completeSignIn(AuthProvider authProvider) async {
+    var user = authProvider.user;
+    if (user == null) {
+      await authProvider.reloadCurrentUser();
+      if (!mounted) return;
+      user = authProvider.user;
+    }
+    if (user != null) {
+      await _go(user);
+    } else {
+      _showSnack(
+        'Could not load your account. Please try signing in again.',
+      );
     }
   }
 
@@ -182,7 +188,7 @@ class _LoginScreenState extends State<LoginScreen> {
             const SocialDivider(),
             const SizedBox(height: AppSizes.spaceMd),
             OutlinedButton.icon(
-              onPressed: _isGoogleLoading ? null : _googleSignIn,
+              onPressed: isLoading ? null : _googleSignIn,
               style: OutlinedButton.styleFrom(
                 minimumSize: const Size.fromHeight(AppSizes.buttonHeight),
                 backgroundColor: Colors.white,

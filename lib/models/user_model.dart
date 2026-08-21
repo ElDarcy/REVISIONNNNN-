@@ -1,5 +1,15 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 import 'address_model.dart';
 import 'role_model.dart';
+
+DateTime? _parseDateTime(dynamic value) {
+  if (value == null) return null;
+  if (value is DateTime) return value;
+  if (value is Timestamp) return value.toDate();
+  if (value is String) return DateTime.tryParse(value);
+  return null;
+}
 
 class UserModel {
   final String id;
@@ -44,12 +54,13 @@ class UserModel {
   factory UserModel.fromMap(Map<String, dynamic> map, String id) {
     AddressModel? address;
     if (map['address'] != null) {
-      if (map['address'] is Map<String, dynamic>) {
-        address = AddressModel.fromMap(map['address']);
-      } else if (map['address'] is String) {
+      final rawAddress = map['address'];
+      if (rawAddress is Map) {
+        address = AddressModel.fromMap(Map<String, dynamic>.from(rawAddress));
+      } else if (rawAddress is String) {
         // Address stored as plain string (legacy data from registration)
         address = AddressModel(
-          street: map['address'] as String,
+          street: rawAddress,
           barangay: '',
           city: '',
           latitude: (map['latitude'] ?? 0.0).toDouble(),
@@ -67,12 +78,8 @@ class UserModel {
       address: address,
       photoUrl: map['photoUrl'],
       isActive: map['isActive'] ?? true,
-      createdAt: map['createdAt'] != null
-          ? DateTime.parse(map['createdAt'])
-          : DateTime.now(),
-      updatedAt: map['updatedAt'] != null
-          ? DateTime.parse(map['updatedAt'])
-          : null,
+      createdAt: _parseDateTime(map['createdAt']) ?? DateTime.now(),
+      updatedAt: _parseDateTime(map['updatedAt']),
     );
   }
 

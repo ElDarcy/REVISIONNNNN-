@@ -1,4 +1,5 @@
 import '../models/user_model.dart';
+import '../models/role_model.dart';
 import 'customer_location_gate.dart';
 
 /// Pure routing decision from a loaded user to the correct start screen.

@@ -25,6 +25,7 @@ enum UserRole {
       case 'customer':
         return UserRole.customer;
       case 'staff':
+        return UserRole.staff;
       case 'laundry_staff':
         return UserRole.laundryStaff;
       case 'delivery_staff':

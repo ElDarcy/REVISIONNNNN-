@@ -1,4 +1,5 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -19,6 +20,7 @@ class AuthProvider extends ChangeNotifier {
   bool _isLoading = false;
   bool _initialized = false;
   String? _error;
+  bool _profileWriteInProgress = false;
 
   UserModel? get user => _user;
   bool get isLoading => _isLoading;
@@ -44,9 +46,39 @@ class AuthProvider extends ChangeNotifier {
     _auth = firebase_auth.FirebaseAuth.instance;
     _firestore = FirebaseFirestore.instance;
     _googleSignIn = GoogleSignIn();
+    _startAuthStateListener();
+  }
+
+  /// Applies web-only persistence, then listens to [authStateChanges].
+  ///
+  /// On Flutter Web, previous browser sessions must not auto-restore after a
+  /// fresh launch or refresh. [Persistence.NONE] keeps the user signed in only
+  /// while this tab stays open. Native platforms keep the default persistence.
+  Future<void> _startAuthStateListener() async {
+    try {
+      await _configureWebAuthPersistence();
+    } catch (e) {
+      debugPrint('Web auth persistence skipped: $e');
+    }
     _auth.authStateChanges().listen((firebaseUser) {
       _handleAuthState(firebaseUser);
     });
+  }
+
+  Future<void> _configureWebAuthPersistence() async {
+    if (!kIsWeb) return;
+
+    await _auth.setPersistence(firebase_auth.Persistence.NONE);
+
+    try {
+      await _googleSignIn.signOut();
+    } catch (e) {
+      debugPrint('Google sign-out skipped: $e');
+    }
+
+    if (_auth.currentUser != null) {
+      await _auth.signOut();
+    }
   }
 
   /// Marks the initial auth snapshot as resolved. Overridable/callable in tests.
@@ -57,25 +89,32 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> _handleAuthState(firebase_auth.User? firebaseUser) async {
-    if (firebaseUser != null) {
-      await _loadUser(firebaseUser.uid);
-      await NotificationService().requestPermission();
-      await NotificationService().registerToken(firebaseUser.uid);
-      // The Admin Web app is the primary pickup-task reconciler: while an
-      // admin session is open it periodically creates/repairs pickup queue
-      // entries and assigns delivery staff. No-ops for other roles and stops
-      // automatically on logout. Delivery Staff run their own pass as a
-      // secondary safety net.
-      if (_user?.role == UserRole.admin) {
-        PickupReconciliationService.instance.start();
+    try {
+      if (firebaseUser != null) {
+        await _loadUser(firebaseUser.uid);
+        try {
+          await NotificationService().requestPermission();
+          await NotificationService().registerToken(firebaseUser.uid);
+        } catch (e) {
+          debugPrint('Notification setup skipped: $e');
+        }
+        // The Admin Web app is the primary pickup-task reconciler: while an
+        // admin session is open it periodically creates/repairs pickup queue
+        // entries and assigns delivery staff. No-ops for other roles and stops
+        // automatically on logout. Delivery Staff run their own pass as a
+        // secondary safety net.
+        if (_user?.role == UserRole.admin) {
+          PickupReconciliationService.instance.start();
+        } else {
+          PickupReconciliationService.instance.stop();
+        }
       } else {
         PickupReconciliationService.instance.stop();
+        _user = null;
       }
-    } else {
-      PickupReconciliationService.instance.stop();
-      _user = null;
+    } finally {
+      completeInitialization();
     }
-    completeInitialization();
   }
 
   /// Route a fully-loaded user to the correct start screen.
@@ -84,6 +123,13 @@ class AuthProvider extends ChangeNotifier {
   /// Setup first, then the dashboard.
   String startRouteFor(UserModel user) => AuthRouting.routeFor(user);
 
+  /// Reloads `users/{uid}` for the currently signed-in Firebase user.
+  Future<void> reloadCurrentUser() async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) return;
+    await _loadUser(uid);
+  }
+
   Future<void> _loadUser(String uid) async {
     try {
       final doc = await _firestore.collection('users').doc(uid).get();
@@ -91,13 +137,19 @@ class AuthProvider extends ChangeNotifier {
         _user = UserModel.fromMap(doc.data()!, doc.id);
       } else {
         debugPrint('User document not found for uid: $uid');
-        _user = null;
+        // A concurrent register/Google profile write owns the first document.
+        // Do not wipe a profile that is in-flight or was just loaded.
+        if (!_profileWriteInProgress && _user?.id != uid) {
+          _user = null;
+        }
       }
       notifyListeners();
     } catch (e) {
       debugPrint('Error loading user data: $e');
       _error = 'Failed to load user data. Please try again.';
-      _user = null;
+      if (!_profileWriteInProgress) {
+        _user = null;
+      }
       notifyListeners();
     }
   }
@@ -113,19 +165,19 @@ class AuthProvider extends ChangeNotifier {
         password: password,
       );
       await _loadUser(result.user!.uid);
-      _isLoading = false;
-      notifyListeners();
+      if (_user == null) {
+        await _loadUser(result.user!.uid);
+      }
       return true;
     } on firebase_auth.FirebaseAuthException catch (e) {
       _error = _getAuthErrorMessage(e);
-      _isLoading = false;
-      notifyListeners();
       return false;
     } catch (e) {
       _error = 'An error occurred. Please try again.';
+      return false;
+    } finally {
       _isLoading = false;
       notifyListeners();
-      return false;
     }
   }
 
@@ -139,16 +191,17 @@ class AuthProvider extends ChangeNotifier {
   Future<bool> signInWithGoogle() async {
     _isLoading = true;
     _error = null;
+    _profileWriteInProgress = true;
     notifyListeners();
 
+    var googleAccountChosen = false;
     try {
       final googleUser = await _googleSignIn.signIn();
       if (googleUser == null) {
-        // User cancelled the Google account picker.
-        _isLoading = false;
-        notifyListeners();
+        _error = null;
         return false;
       }
+      googleAccountChosen = true;
 
       final authentication = await googleUser.authentication;
       final credential = firebase_auth.GoogleAuthProvider.credential(
@@ -178,19 +231,28 @@ class AuthProvider extends ChangeNotifier {
       }
 
       await _loadUser(uid);
-      _isLoading = false;
-      notifyListeners();
+      if (_user == null) {
+        await _loadUser(uid);
+      }
       return true;
-    } on firebase_auth.FirebaseAuthException catch (e) {
-      _error = _getAuthErrorMessage(e);
-      _isLoading = false;
-      notifyListeners();
-      return false;
     } catch (e) {
-      _error = 'Google sign-in failed. Please try again.';
+      if (_isGoogleCancel(e)) {
+        _error = null;
+        return false;
+      }
+      if (googleAccountChosen) {
+        await _cleanupGoogleSession();
+      }
+      if (e is firebase_auth.FirebaseAuthException) {
+        _error = _getAuthErrorMessage(e);
+      } else {
+        _error = 'Google sign-in failed. Please try again.';
+      }
+      return false;
+    } finally {
+      _profileWriteInProgress = false;
       _isLoading = false;
       notifyListeners();
-      return false;
     }
   }
 
@@ -206,49 +268,56 @@ class AuthProvider extends ChangeNotifier {
   }) async {
     _isLoading = true;
     _error = null;
+    _profileWriteInProgress = true;
     notifyListeners();
 
     try {
-      final result = await _auth.createUserWithEmailAndPassword(
-        email: email.trim(),
+      final trimmedEmail = email.trim();
+      final firebaseUser = await _resolveRegisterAuthUser(
+        email: trimmedEmail,
         password: password,
       );
 
       // Create user profile. Location data is included ONLY when the
       // customer explicitly completed Location Setup during registration.
       final userModel = UserModel(
-        id: result.user!.uid,
+        id: firebaseUser.uid,
         name: name,
-        email: email.trim(),
+        email: trimmedEmail,
         phone: phone,
         role: UserRole.customer,
         address: addressModel,
         createdAt: DateTime.now(),
       );
 
-      await _firestore.collection('users').doc(result.user!.uid).set({
-        ...userModel.toMap(),
-        if (addressModel != null) ...{
-          // Flat legacy fields kept for backward compatibility.
-          'latitude': addressModel.latitude,
-          'longitude': addressModel.longitude,
-        },
-      });
+      final docRef = _firestore.collection('users').doc(firebaseUser.uid);
+      final existingDoc = await docRef.get();
+      if (!existingDoc.exists) {
+        await docRef.set({
+          ...userModel.toMap(),
+          if (addressModel != null) ...{
+            // Flat legacy fields kept for backward compatibility.
+            'latitude': addressModel.latitude,
+            'longitude': addressModel.longitude,
+          },
+        });
+      }
 
-      await _loadUser(result.user!.uid);
-      _isLoading = false;
-      notifyListeners();
+      await _loadUser(firebaseUser.uid);
+      if (_user == null) {
+        await _loadUser(firebaseUser.uid);
+      }
       return true;
     } on firebase_auth.FirebaseAuthException catch (e) {
       _error = _getAuthErrorMessage(e);
-      _isLoading = false;
-      notifyListeners();
       return false;
     } catch (e) {
       _error = 'Registration failed. Please try again.';
+      return false;
+    } finally {
+      _profileWriteInProgress = false;
       _isLoading = false;
       notifyListeners();
-      return false;
     }
   }
 
@@ -275,18 +344,18 @@ class AuthProvider extends ChangeNotifier {
       }, SetOptions(merge: true));
 
       _user = updated;
-      _isLoading = false;
-      notifyListeners();
       return true;
     } catch (e) {
       _error = 'Failed to save your location. Please try again.';
+      return false;
+    } finally {
       _isLoading = false;
       notifyListeners();
-      return false;
     }
   }
 
   Future<void> logout() async {
+    await _cleanupGoogleSession();
     await _auth.signOut();
     _user = null;
     notifyListeners();
@@ -309,6 +378,76 @@ class AuthProvider extends ChangeNotifier {
       return doc.data()?['role'] ?? 'customer';
     }
     return 'customer';
+  }
+
+  /// Creates the Auth user, or reuses the already-signed-in account when a
+  /// previous attempt created Auth but failed before the Firestore profile.
+  Future<firebase_auth.User> _resolveRegisterAuthUser({
+    required String email,
+    required String password,
+  }) async {
+    final current = _auth.currentUser;
+    if (current != null &&
+        current.email != null &&
+        current.email!.toLowerCase() == email.toLowerCase()) {
+      return current;
+    }
+
+    try {
+      final result = await _auth.createUserWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+      return result.user!;
+    } on firebase_auth.FirebaseAuthException catch (e) {
+      if (e.code == 'email-already-in-use') {
+        final signedIn = _auth.currentUser;
+        if (signedIn != null &&
+            signedIn.email != null &&
+            signedIn.email!.toLowerCase() == email.toLowerCase()) {
+          return signedIn;
+        }
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _cleanupGoogleSession() async {
+    try {
+      await _googleSignIn.signOut();
+    } catch (e) {
+      debugPrint('Google sign-out skipped: $e');
+    }
+  }
+
+  bool _isGoogleCancel(Object error) {
+    String? code;
+    if (error is firebase_auth.FirebaseAuthException) {
+      code = error.code;
+    } else if (error is PlatformException) {
+      code = error.code;
+    }
+    if (code != null && _isGoogleCancelCode(code)) return true;
+
+    final text = error.toString().toLowerCase();
+    return text.contains('popup-closed-by-user') ||
+        text.contains('sign_in_canceled') ||
+        text.contains('sign_in_cancelled') ||
+        (text.contains('canceled') && text.contains('google'));
+  }
+
+  bool _isGoogleCancelCode(String code) {
+    switch (code) {
+      case 'canceled':
+      case 'cancelled':
+      case 'popup-closed-by-user':
+      case 'sign_in_canceled':
+      case 'sign_in_cancelled':
+      case '12501':
+        return true;
+      default:
+        return false;
+    }
   }
 
   String _getAuthErrorMessage(firebase_auth.FirebaseAuthException e) {
