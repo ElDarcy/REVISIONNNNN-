@@ -14,7 +14,7 @@ class AuthProvider extends ChangeNotifier {
   // Lazy so widget tests can subclass without touching Firebase.
   late final firebase_auth.FirebaseAuth _auth;
   late final FirebaseFirestore _firestore;
-  late final GoogleSignIn _googleSignIn;
+  GoogleSignIn? _googleSignIn;
 
   UserModel? _user;
   bool _isLoading = false;
@@ -45,7 +45,9 @@ class AuthProvider extends ChangeNotifier {
   void subscribeToAuthChanges() {
     _auth = firebase_auth.FirebaseAuth.instance;
     _firestore = FirebaseFirestore.instance;
-    _googleSignIn = GoogleSignIn();
+    if (!kIsWeb) {
+      _googleSignIn = GoogleSignIn();
+    }
     _startAuthStateListener();
   }
 
@@ -69,12 +71,6 @@ class AuthProvider extends ChangeNotifier {
     if (!kIsWeb) return;
 
     await _auth.setPersistence(firebase_auth.Persistence.NONE);
-
-    try {
-      await _googleSignIn.signOut();
-    } catch (e) {
-      debugPrint('Google sign-out skipped: $e');
-    }
 
     if (_auth.currentUser != null) {
       await _auth.signOut();
@@ -196,32 +192,25 @@ class AuthProvider extends ChangeNotifier {
 
     var googleAccountChosen = false;
     try {
-      final googleUser = await _googleSignIn.signIn();
-      if (googleUser == null) {
+      final firebaseUser = await _authenticateWithGoogle();
+      if (firebaseUser == null) {
         _error = null;
         return false;
       }
       googleAccountChosen = true;
 
-      final authentication = await googleUser.authentication;
-      final credential = firebase_auth.GoogleAuthProvider.credential(
-        idToken: authentication.idToken,
-        accessToken: authentication.accessToken,
-      );
-
-      final result = await _auth.signInWithCredential(credential);
-      final uid = result.user!.uid;
+      final uid = firebaseUser.uid;
 
       final doc = await _firestore.collection('users').doc(uid).get();
       if (!doc.exists) {
         final userModel = UserModel(
           id: uid,
-          name: googleUser.displayName?.trim() ?? '',
-          email: googleUser.email.trim(),
+          name: firebaseUser.displayName?.trim() ?? '',
+          email: (firebaseUser.email ?? '').trim(),
           phone: '',
           role: UserRole.customer,
           address: null,
-          photoUrl: googleUser.photoUrl,
+          photoUrl: firebaseUser.photoURL,
           createdAt: DateTime.now(),
         );
         // New customer profile — location fields are intentionally NOT
@@ -236,6 +225,11 @@ class AuthProvider extends ChangeNotifier {
       }
       return true;
     } catch (e) {
+      debugPrint('Google Sign-In error: $e');
+      if (e is firebase_auth.FirebaseAuthException) {
+        debugPrint('Google Sign-In code: ${e.code}');
+        debugPrint('Google Sign-In message: ${e.message}');
+      }
       if (_isGoogleCancel(e)) {
         _error = null;
         return false;
@@ -412,9 +406,31 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  /// Web uses Firebase Auth's Google popup. Android/iOS keep GoogleSignIn.
+  Future<firebase_auth.User?> _authenticateWithGoogle() async {
+    if (kIsWeb) {
+      final provider = firebase_auth.GoogleAuthProvider();
+      final result = await _auth.signInWithPopup(provider);
+      return result.user ?? _auth.currentUser;
+    }
+
+    final googleUser = await _googleSignIn!.signIn();
+    if (googleUser == null) return null;
+
+    final authentication = await googleUser.authentication;
+    final credential = firebase_auth.GoogleAuthProvider.credential(
+      idToken: authentication.idToken,
+      accessToken: authentication.accessToken,
+    );
+
+    final result = await _auth.signInWithCredential(credential);
+    return result.user;
+  }
+
   Future<void> _cleanupGoogleSession() async {
+    if (kIsWeb) return;
     try {
-      await _googleSignIn.signOut();
+      await _googleSignIn?.signOut();
     } catch (e) {
       debugPrint('Google sign-out skipped: $e');
     }
@@ -441,6 +457,7 @@ class AuthProvider extends ChangeNotifier {
       case 'canceled':
       case 'cancelled':
       case 'popup-closed-by-user':
+      case 'cancelled-popup-request':
       case 'sign_in_canceled':
       case 'sign_in_cancelled':
       case '12501':
@@ -469,6 +486,10 @@ class AuthProvider extends ChangeNotifier {
       case 'popup-closed-by-user':
       case 'canceled':
         return 'Google sign-in was cancelled.';
+      case 'popup-blocked':
+        return 'Google sign-in popup was blocked. Allow popups and try again.';
+      case 'unauthorized-domain':
+        return 'This domain is not authorized for Google sign-in.';
       case 'sign_in_failed':
       case 'sign_in_canceled':
         return 'Google sign-in failed. Please try again.';
